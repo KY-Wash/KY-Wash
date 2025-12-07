@@ -452,9 +452,6 @@ const KYWashSystem = () => {
       timestamp: Date.now(),
     }]);
 
-    // Remove user from waitlist when starting a machine
-    leaveWaitlist(machineType);
-
     showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} started!`);
   };
 
@@ -649,6 +646,66 @@ const KYWashSystem = () => {
     const description = `Your busiest washing times are around ${peakHours.map(h => `${h}:00`).join(', ')}. Consider washing between ${suggestedHours.map(h => `${h}:00`).join(' and ')} for shorter wait times.`;
 
     return { peakHours, suggestedHours, description };
+  };
+
+  const getWeeklyStats = (): { dayStats: Record<string, number>; totalUsage: number; peakDay: string; avgUsage: number } => {
+    // Get stats for the current week (Monday - Sunday)
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1)); // Monday
+    startOfWeek.setHours(0, 0, 0, 0);
+
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 6); // Sunday
+    endOfWeek.setHours(23, 59, 59, 999);
+
+    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    const dayStats: Record<string, number> = {};
+    days.forEach(day => dayStats[day] = 0);
+
+    // Count all machine usage (washers and dryers) by day of week
+    usageHistory.forEach((record: UsageHistory) => {
+      const recordDate = new Date(record.timestamp);
+      if (recordDate >= startOfWeek && recordDate <= endOfWeek) {
+        const day = days[recordDate.getDay() === 0 ? 6 : recordDate.getDay() - 1];
+        dayStats[day]++;
+      }
+    });
+
+    const totalUsage = Object.values(dayStats).reduce((a, b) => a + b, 0);
+    const avgUsage = totalUsage > 0 ? Math.round(totalUsage / 7) : 0;
+    const peakDay = Object.entries(dayStats).sort(([, a], [, b]) => b - a)[0]?.[0] || 'N/A';
+
+    return { dayStats, totalUsage, peakDay, avgUsage };
+  };
+
+  const getCriticalIssues = (): Array<{ machineType: string; machineId: number; reportCount: number; description: string }> => {
+    // Get issues that have more than 3 unresolved reports for the same machine
+    const issueCounts: Record<string, { count: number; description: string; machineType: string; machineId: number }> = {};
+    reportedIssues.forEach((issue: ReportedIssue) => {
+      if (!issue.resolved) {
+        const key = `${issue.machineType}-${issue.machineId}`;
+        if (!issueCounts[key]) {
+          issueCounts[key] = { count: 0, description: issue.description, machineType: issue.machineType, machineId: issue.machineId };
+        }
+        issueCounts[key].count++;
+      }
+    });
+
+    const criticalIssues: Array<{ machineType: string; machineId: number; reportCount: number; description: string }> = [];
+    Object.entries(issueCounts).forEach(([, issueData]) => {
+      if (issueData.count > 3) {
+        criticalIssues.push({
+          machineType: issueData.machineType,
+          machineId: issueData.machineId,
+          reportCount: issueData.count,
+          description: issueData.description
+        });
+      }
+    });
+
+    return criticalIssues;
   };
 
   const formatTime = (seconds: number): string => {
@@ -1505,6 +1562,116 @@ const KYWashSystem = () => {
                       )}
                     </div>
                   );
+                })()}
+
+                {/* Weekly System Usage Stats (All Washers & Dryers) */}
+                {(() => {
+                  const weeklyData = getWeeklyStats();
+                  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+                  return (
+                    <div className={`rounded-lg shadow-md p-6 transition-colors ${
+                      darkMode ? 'bg-gray-800' : 'bg-white'
+                    }`}>
+                      <h3 className={`text-xl font-bold mb-4 flex items-center gap-2 ${
+                        darkMode ? 'text-white' : 'text-gray-800'
+                      }`}>
+                        <BarChart3 className="w-6 h-6" />
+                        Weekly System Usage (All Machines)
+                      </h3>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                        <div className={`p-4 rounded-lg text-center ${
+                          darkMode ? 'bg-blue-900' : 'bg-blue-50'
+                        }`}>
+                          <p className={`text-sm font-semibold ${
+                            darkMode ? 'text-blue-300' : 'text-blue-800'
+                          }`}>Total Uses This Week</p>
+                          <p className={`text-3xl font-bold ${
+                            darkMode ? 'text-blue-400' : 'text-blue-600'
+                          }`}>{weeklyData.totalUsage}</p>
+                        </div>
+                        <div className={`p-4 rounded-lg text-center ${
+                          darkMode ? 'bg-purple-900' : 'bg-purple-50'
+                        }`}>
+                          <p className={`text-sm font-semibold ${
+                            darkMode ? 'text-purple-300' : 'text-purple-800'
+                          }`}>Peak Day</p>
+                          <p className={`text-2xl font-bold ${
+                            darkMode ? 'text-purple-400' : 'text-purple-600'
+                          }`}>{weeklyData.peakDay}</p>
+                        </div>
+                        <div className={`p-4 rounded-lg text-center ${
+                          darkMode ? 'bg-indigo-900' : 'bg-indigo-50'
+                        }`}>
+                          <p className={`text-sm font-semibold ${
+                            darkMode ? 'text-indigo-300' : 'text-indigo-800'
+                          }`}>Daily Average</p>
+                          <p className={`text-3xl font-bold ${
+                            darkMode ? 'text-indigo-400' : 'text-indigo-600'
+                          }`}>{weeklyData.avgUsage}</p>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        {days.map((day) => {
+                          const count = weeklyData.dayStats[day] || 0;
+                          const maxCount = Math.max(...Object.values(weeklyData.dayStats));
+                          const percentage = maxCount > 0 ? (count / maxCount) * 100 : 0;
+                          return (
+                            <div key={day} className="space-y-1">
+                              <div className="flex justify-between text-sm">
+                                <span className={darkMode ? 'text-gray-300' : 'text-gray-700'}>{day}</span>
+                                <span className={`font-semibold ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{count} uses</span>
+                              </div>
+                              <div className={`w-full h-6 rounded-lg overflow-hidden ${
+                                darkMode ? 'bg-gray-700' : 'bg-gray-200'
+                              }`}>
+                                <div
+                                  className={`h-full transition-all ${
+                                    darkMode ? 'bg-blue-600' : 'bg-blue-500'
+                                  }`}
+                                  style={{ width: `${percentage}%` }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Critical Issues Alert */}
+                {(() => {
+                  const criticalIssues = getCriticalIssues();
+                  return criticalIssues.length > 0 ? (
+                    <div className={`rounded-lg shadow-md p-6 transition-colors border-l-4 ${
+                      darkMode ? 'bg-red-900 border-red-600' : 'bg-red-50 border-red-500'
+                    }`}>
+                      <h3 className={`text-xl font-bold mb-4 flex items-center gap-2 ${
+                        darkMode ? 'text-red-300' : 'text-red-800'
+                      }`}>
+                        <AlertCircle className="w-6 h-6" />
+                        ⚠️ Critical Issues Detected
+                      </h3>
+                      <div className="space-y-3">
+                        {criticalIssues.map((issue, idx) => (
+                          <div key={idx} className={`p-3 rounded ${
+                            darkMode ? 'bg-red-800' : 'bg-red-100'
+                          }`}>
+                            <p className={`font-semibold ${
+                              darkMode ? 'text-red-200' : 'text-red-900'
+                            }`}>
+                              {issue.machineType.charAt(0).toUpperCase() + issue.machineType.slice(1)} #{issue.machineId} ({issue.reportCount} reports)
+                            </p>
+                            <p className={`text-sm mt-1 ${
+                              darkMode ? 'text-red-300' : 'text-red-800'
+                            }`}>
+                              {issue.description}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null;
                 })()}
               </div>
             )}

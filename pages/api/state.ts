@@ -38,12 +38,6 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             machine.userStudentId = data.studentId;
             machine.userPhone = data.phoneNumber;
 
-            // Auto-remove from waitlist
-            const waitlistKey = data.machineType === 'washer' ? 'washers' : 'dryers';
-            state.waitlists[waitlistKey] = state.waitlists[waitlistKey].filter(
-              (entry) => entry.studentId !== data.studentId
-            );
-
             // Add to usage history
             const now = new Date();
             state.usageHistory.push({
