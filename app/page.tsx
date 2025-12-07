@@ -255,8 +255,8 @@ const KYWashSystem = () => {
     // Fetch initial state
     fetchState();
 
-    // Poll every 1 second for real-time updates
-    pollingIntervalRef.current = setInterval(fetchState, 1000);
+    // Poll every 5 seconds for state updates (not every 1 second to avoid overwriting timer ticks)
+    pollingIntervalRef.current = setInterval(fetchState, 5000);
 
     return () => {
       if (pollingIntervalRef.current) {
@@ -268,10 +268,19 @@ const KYWashSystem = () => {
   // Timer countdown effect
   useEffect(() => {
     const timerInterval = setInterval(() => {
-      setMachines((prevMachines: Machine[]) => 
-        prevMachines.map((machine: Machine) => {
+      setMachines((prevMachines: Machine[]) => {
+        const updatedMachines = prevMachines.map((machine: Machine) => {
           if (machine.status === 'running' && machine.timeLeft > 0) {
             const newTimeLeft = machine.timeLeft - 1;
+            
+            // Emit timer-tick to API for persistence
+            if (socketRef.current?.emit) {
+              socketRef.current.emit('timer-tick', {
+                machineId: String(machine.id),
+                machineType: machine.type,
+                timeLeft: newTimeLeft,
+              });
+            }
             
             if (newTimeLeft === 0) {
               // Timer completed
@@ -281,7 +290,7 @@ const KYWashSystem = () => {
               
               return { 
                 ...machine, 
-                status: 'available', 
+                status: 'available' as const, 
                 timeLeft: 0, 
                 mode: null, 
                 userStudentId: null, 
@@ -292,8 +301,9 @@ const KYWashSystem = () => {
             return { ...machine, timeLeft: newTimeLeft };
           }
           return machine;
-        })
-      );
+        });
+        return updatedMachines;
+      });
     }, 1000);
 
     return () => clearInterval(timerInterval);

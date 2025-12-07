@@ -135,6 +135,24 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           break;
         }
 
+        case 'timer-tick': {
+          const machine = state.machines.find(
+            (m) => m.id === data.machineId && m.type === data.machineType
+          );
+          if (machine && machine.status === 'running') {
+            machine.timeLeft = Math.max(0, data.timeLeft);
+            
+            // If timer reached 0, mark as available
+            if (machine.timeLeft === 0) {
+              machine.status = 'available';
+              machine.mode = '';
+              machine.userStudentId = '';
+              machine.userPhone = '';
+            }
+          }
+          break;
+        }
+
         default:
           return res.status(400).json({ error: 'Unknown event type' });
       }
