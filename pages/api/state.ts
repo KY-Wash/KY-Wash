@@ -37,22 +37,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             machine.timeLeft = data.duration * 60;
             machine.userStudentId = data.studentId;
             machine.userPhone = data.phoneNumber;
-
-            // Add to usage history
-            const now = new Date();
-            state.usageHistory.push({
-              id: `${Date.now()}-${Math.random()}`,
-              machineType: data.machineType,
-              machineId: data.machineId,
-              mode: data.mode,
-              duration: data.duration,
-              date: now.toLocaleDateString(),
-              studentId: data.studentId,
-              timestamp: now.getTime(),
-            });
-
-            state.stats.totalWashes += 1;
-            state.stats.totalMinutes += data.duration;
+            // Don't record usage history yet - only when clothes are collected
           }
           break;
         }
@@ -62,6 +47,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             (m) => m.id === data.machineId && m.type === data.machineType
           );
           if (machine && machine.userStudentId === data.studentId) {
+            // Don't record to history when user cancels - only when they complete
             machine.status = 'available';
             machine.timeLeft = 0;
             machine.mode = '';
@@ -136,19 +122,54 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           if (machine && machine.status === 'running') {
             machine.timeLeft = Math.max(0, data.timeLeft);
             
-            // If timer reached 0, mark as available
+            // If timer reached 0, mark as pending-collection waiting for user to collect
             if (machine.timeLeft === 0) {
-              machine.status = 'available';
-              machine.mode = '';
-              machine.userStudentId = '';
-              machine.userPhone = '';
+              machine.status = 'pending-collection';
             }
           }
           break;
         }
 
-        default:
-          return res.status(400).json({ error: 'Unknown event type' });
+        case 'clothes-collected': {
+          const machine = state.machines.find(
+            (m) => m.id === data.machineId && m.type === data.machineType
+          );
+          if (machine && machine.userStudentId === data.studentId) {
+            // Now record to usage history when clothes are actually collected
+            const now = new Date();
+            state.usageHistory.push({
+              id: `${Date.now()}-${Math.random()}`,
+              machineType: data.machineType,
+              machineId: data.machineId,
+              mode: machine.mode || '',
+              duration: 0, // Duration would be tracked elsewhere, defaulting to 0
+              date: now.toLocaleDateString(),
+              studentId: data.studentId,
+              timestamp: now.getTime(),
+            });
+
+            state.stats.totalWashes += 1;
+
+            // Free up the machine
+            machine.status = 'available';
+            machine.timeLeft = 0;
+            machine.mode = '';
+            machine.userStudentId = '';
+            machine.userPhone = '';
+          }
+          break;
+        }
+
+        case 'admin-update-machine': {
+          const machine = state.machines.find(
+            (m) => m.id === data.machineId && m.type === data.machineType
+          );
+          if (machine) {
+            machine.status = data.status;
+            machine.locked = data.status === 'maintenance';
+          }
+          break;
+        }
       }
 
       updateAppState(state);

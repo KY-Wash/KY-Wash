@@ -18,7 +18,7 @@ export interface SharedAppState {
 export interface Machine {
   id: string;
   type: 'washer' | 'dryer';
-  status: 'available' | 'running' | 'completed';
+  status: 'available' | 'running' | 'maintenance' | 'pending-collection';
   timeLeft: number;
   mode: string;
   locked: boolean;

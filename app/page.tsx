@@ -11,12 +11,14 @@ interface User {
 interface Machine {
   id: number;
   type: 'washer' | 'dryer';
-  status: 'available' | 'running' | 'maintenance';
+  status: 'available' | 'running' | 'maintenance' | 'pending-collection';
   timeLeft: number;
   mode: string | null;
   locked: boolean;
   userStudentId: string | null;
   userPhone: string | null;
+  originalDuration?: number;
+  cancellable?: boolean;
 }
 
 interface WaitlistEntry {
@@ -283,18 +285,16 @@ const KYWashSystem = () => {
             }
             
             if (newTimeLeft === 0) {
-              // Timer completed
+              // Timer completed - transition to pending-collection
               playNotificationSound();
-              showNotification(`${machine.type.charAt(0).toUpperCase() + machine.type.slice(1)} ${machine.id} is now available!`);
-              notifyWaitlist(machine.type);
+              showNotification(`${machine.type.charAt(0).toUpperCase() + machine.type.slice(1)} ${machine.id} washing is complete! Please collect your clothes.`);
               
               return { 
                 ...machine, 
-                status: 'available' as const, 
-                timeLeft: 0, 
-                mode: null, 
-                userStudentId: null, 
-                userPhone: null 
+                status: 'pending-collection' as const, 
+                timeLeft: 0,
+                originalDuration: machine.originalDuration || 0,
+                cancellable: false
               };
             }
             
@@ -604,6 +604,49 @@ const KYWashSystem = () => {
         ? { ...machine, status: newStatus, locked: newStatus === 'maintenance' }
         : machine
     ));
+
+    // Emit admin update to API
+    if (socketRef.current?.emit) {
+      socketRef.current.emit('admin-update-machine', {
+        machineId: String(machineId),
+        machineType: machineType,
+        status: newStatus,
+      });
+    }
+
+    showNotification(`Machine ${machineType} ${machineId} updated to ${newStatus}.`);
+  };
+
+  const clothesCollected = (machineId: number, machineType: 'washer' | 'dryer'): void => {
+    if (!user) return;
+
+    // Emit to real-time API
+    if (socketRef.current?.emit) {
+      socketRef.current.emit('clothes-collected', {
+        machineId: String(machineId),
+        machineType: machineType,
+        studentId: user.studentId,
+      });
+    }
+
+    // Mark machine as available and notify next waitlist user
+    setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
+      machine.id === machineId && machine.type === machineType
+        ? { ...machine, status: 'available', timeLeft: 0, mode: null, userStudentId: null, userPhone: null }
+        : machine
+    ));
+
+    showNotification('Clothes collected! Machine is now available for others.');
+    notifyWaitlist(machineType);
+  };
+
+  const notifyComingToCollect = (machineId: number, machineType: 'washer' | 'dryer'): void => {
+    if (!user) return;
+
+    const machine = machines.find((m) => m.id === machineId && m.type === machineType);
+    if (!machine) return;
+
+    showNotification(`You notified that you're coming to collect your clothes from ${machineType} ${machineId}.`);
   };
 
   const calculateWaitTime = (position: number, type: string): number => {
@@ -825,7 +868,8 @@ const KYWashSystem = () => {
                   <input
                     type="text"
                     value={studentId}
-                    onChange={(e) => setStudentId(e.target.value)}
+                    onChange={(e) => setStudentId(e.target.value.slice(0, 6))}
+                    maxLength={6}
                     className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
                       darkMode ? 'bg-gray-700 text-white border-gray-600' : 'bg-white text-black border-gray-300'
                     }`}
@@ -837,7 +881,8 @@ const KYWashSystem = () => {
                   <input
                     type="text"
                     value={phoneNumber}
-                    onChange={(e) => setPhoneNumber(e.target.value)}
+                    onChange={(e) => setPhoneNumber(e.target.value.slice(0, 11))}
+                    maxLength={11}
                     className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
                       darkMode ? 'bg-gray-700 text-white border-gray-600' : 'bg-white text-black border-gray-300'
                     }`}
@@ -849,7 +894,8 @@ const KYWashSystem = () => {
                   <input
                     type="password"
                     value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    onChange={(e) => setPassword(e.target.value.slice(0, 8))}
+                    maxLength={8}
                     onKeyPress={(e) => e.key === 'Enter' && handleLogin()}
                     className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
                       darkMode ? 'bg-gray-700 text-white border-gray-600' : 'bg-white text-black border-gray-300'
@@ -1298,6 +1344,38 @@ const KYWashSystem = () => {
                           </>
                         )}
 
+                        {machine.status === 'pending-collection' && machine.userStudentId === user.studentId && (
+                          <>
+                            <p className={`text-sm mb-3 font-semibold ${
+                              darkMode ? 'text-green-400' : 'text-green-600'
+                            }`}>
+                              Washing complete! Your clothes are ready for pickup.
+                            </p>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                notifyComingToCollect(machine.id, 'washer');
+                              }}
+                              className={`w-full mt-2 px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
+                              }`}
+                            >
+                              I am coming to collect my clothes
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                clothesCollected(machine.id, 'washer');
+                              }}
+                              className={`w-full mt-2 px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
+                              }`}
+                            >
+                              Clothes Collected
+                            </button>
+                          </>
+                        )}
+
                         {machine.status === 'available' && !machine.locked && (
                           <>
                             <div className="space-y-2 mb-3">
@@ -1392,6 +1470,38 @@ const KYWashSystem = () => {
                                 Cancel
                               </button>
                             )}
+                          </>
+                        )}
+
+                        {machine.status === 'pending-collection' && machine.userStudentId === user.studentId && (
+                          <>
+                            <p className={`text-sm mb-3 font-semibold ${
+                              darkMode ? 'text-green-400' : 'text-green-600'
+                            }`}>
+                              Drying complete! Your clothes are ready for pickup.
+                            </p>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                notifyComingToCollect(machine.id, 'dryer');
+                              }}
+                              className={`w-full mt-2 px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
+                              }`}
+                            >
+                              I am coming to collect my clothes
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                clothesCollected(machine.id, 'dryer');
+                              }}
+                              className={`w-full mt-2 px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
+                              }`}
+                            >
+                              Clothes Collected
+                            </button>
                           </>
                         )}
 
