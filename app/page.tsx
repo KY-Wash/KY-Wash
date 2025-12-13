@@ -35,6 +35,8 @@ interface UsageHistory {
   date: string;
   studentId: string;
   timestamp: number;
+  spending?: number;
+  status?: 'completed' | 'cancelled';
 }
 
 interface ReportedIssue {
@@ -102,9 +104,7 @@ const KYWashSystem = () => {
 
   const modes: Mode[] = [
     { name: 'Normal', duration: 30 },
-    { name: 'Extra 5 min', duration: 35 },
-    { name: 'Extra 10 min', duration: 40 },
-    { name: 'Extra 15 min', duration: 45 }
+    { name: 'Extra Wash', duration: 40 }
   ];
 
   // Real-time sync with polling
@@ -129,7 +129,7 @@ const KYWashSystem = () => {
           if (result.state) {
             const newState = result.state;
             
-            // Update machines
+            // Update machines - preserve originalDuration if present
             setMachines(
               newState.machines.map((m: any) => ({
                 id: parseInt(m.id),
@@ -140,6 +140,7 @@ const KYWashSystem = () => {
                 locked: m.locked,
                 userStudentId: m.userStudentId || null,
                 userPhone: m.userPhone || null,
+                originalDuration: m.originalDuration || undefined,
               }))
             );
 
@@ -180,6 +181,8 @@ const KYWashSystem = () => {
                   date: record.date,
                   studentId: record.studentId,
                   timestamp: record.timestamp,
+                  spending: record.spending || 0,
+                  status: record.status || 'completed',
                 }))
               );
             }
@@ -200,7 +203,7 @@ const KYWashSystem = () => {
         if (response.ok) {
           const newState = await response.json();
 
-          // Update machines
+          // Update machines - preserve originalDuration if present
           setMachines(
             newState.machines.map((m: any) => ({
               id: parseInt(m.id),
@@ -211,6 +214,7 @@ const KYWashSystem = () => {
               locked: m.locked,
               userStudentId: m.userStudentId || null,
               userPhone: m.userPhone || null,
+              originalDuration: m.originalDuration || undefined,
             }))
           );
 
@@ -246,6 +250,8 @@ const KYWashSystem = () => {
               date: record.date,
               studentId: record.studentId,
               timestamp: record.timestamp,
+              spending: record.spending || 0,
+              status: record.status || 'completed',
             }))
           );
         }
@@ -269,11 +275,19 @@ const KYWashSystem = () => {
 
   // Track machines that have already triggered completion notification
   const notifiedMachinesRef = useRef<Set<string>>(new Set());
+  // Track machines that have already sent 5-minute reminder
+  const reminderSentRef = useRef<Set<string>>(new Set());
 
   // Monitor for completion and trigger notifications with alarm sound
   useEffect(() => {
     machines.forEach((machine) => {
       const machineKey = `${machine.type}-${machine.id}`;
+      
+      // Check for 5-minute reminder (300 seconds = 5 minutes)
+      if (machine.status === 'running' && machine.timeLeft === 300 && !reminderSentRef.current.has(machineKey)) {
+        reminderSentRef.current.add(machineKey);
+        showNotification(`⏰ Reminder: ${machine.type.charAt(0).toUpperCase() + machine.type.slice(1)} ${machine.id} will be done in 5 minutes!`);
+      }
       
       // Check if machine just completed (transitioned to pending-collection)
       if (machine.status === 'pending-collection' && !notifiedMachinesRef.current.has(machineKey)) {
@@ -282,9 +296,10 @@ const KYWashSystem = () => {
         showNotification(`${machine.type.charAt(0).toUpperCase() + machine.type.slice(1)} ${machine.id} is complete! Please collect your clothes.`);
       }
       
-      // Reset notification flag when machine becomes available again
+      // Reset notification flags when machine becomes available again
       if (machine.status === 'available' && notifiedMachinesRef.current.has(machineKey)) {
         notifiedMachinesRef.current.delete(machineKey);
+        reminderSentRef.current.delete(machineKey);
       }
     });
   }, [machines]);
@@ -440,6 +455,9 @@ const KYWashSystem = () => {
       return;
     }
 
+    // Calculate spending based on mode
+    const spending = getSpendingForMode(mode.name);
+
     // Emit to real-time API
     if (socketRef.current?.emit) {
       socketRef.current.emit('machine-start', {
@@ -460,11 +478,13 @@ const KYWashSystem = () => {
             timeLeft: mode.duration * 60,
             mode: mode.name,
             userStudentId: user.studentId,
-            userPhone: user.phoneNumber
+            userPhone: user.phoneNumber,
+            originalDuration: mode.duration
           }
         : machine
     ));
 
+    // Record in usage history with spending and completed status
     setUsageHistory((prev: UsageHistory[]) => [...prev, {
       id: `${Date.now()}-${Math.random()}`,
       machineType: machineType,
@@ -474,9 +494,11 @@ const KYWashSystem = () => {
       date: new Date().toLocaleDateString(),
       studentId: user.studentId,
       timestamp: Date.now(),
+      spending: spending,
+      status: 'completed'
     }]);
 
-    showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} started!`);
+    showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} started! Charge: RM${spending}`);
   };
 
   const cancelMachine = (machineId: number, machineType: 'washer' | 'dryer'): void => {
@@ -491,12 +513,30 @@ const KYWashSystem = () => {
       });
     }
 
+    // Mark the active usage history entry as cancelled and remove spending
+    setUsageHistory((prev: UsageHistory[]) => 
+      prev.map((h: UsageHistory) => {
+        if (h.studentId === user.studentId && 
+            h.machineType === machineType && 
+            h.machineId === machineId &&
+            h.status === 'completed') {
+          // Mark as cancelled and remove spending
+          return {
+            ...h,
+            status: 'cancelled',
+            spending: 0
+          };
+        }
+        return h;
+      })
+    );
+
     setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
       machine.id === machineId && machine.type === machineType
-        ? { ...machine, status: 'available', timeLeft: 0, mode: null, userStudentId: null, userPhone: null }
+        ? { ...machine, status: 'available', timeLeft: 0, mode: null, userStudentId: null, userPhone: null, originalDuration: undefined }
         : machine
     ));
-    showNotification('Machine cancelled');
+    showNotification('Machine cancelled. Spending not recorded.');
   };
 
   const joinWaitlist = (type: string): void => {
@@ -791,6 +831,54 @@ const KYWashSystem = () => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+  };
+
+  const getSpendingForMode = (mode: string): number => {
+    if (mode === 'Normal') return 5;
+    if (mode === 'Extra Wash') return 6;
+    return 0;
+  };
+
+  const calculateWeeklySpending = (studentId: string): number => {
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+    startOfWeek.setHours(0, 0, 0, 0);
+
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 6);
+    endOfWeek.setHours(23, 59, 59, 999);
+
+    return usageHistory
+      .filter((h: UsageHistory) => 
+        h.studentId === studentId && 
+        h.status === 'completed' &&
+        new Date(h.timestamp) >= startOfWeek && 
+        new Date(h.timestamp) <= endOfWeek
+      )
+      .reduce((sum: number, h: UsageHistory) => sum + (h.spending || 0), 0);
+  };
+
+  const calculateMonthlySpending = (studentId: string): number => {
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    return usageHistory
+      .filter((h: UsageHistory) => 
+        h.studentId === studentId && 
+        h.status === 'completed' &&
+        new Date(h.timestamp) >= startOfMonth && 
+        new Date(h.timestamp) <= endOfMonth
+      )
+      .reduce((sum: number, h: UsageHistory) => sum + (h.spending || 0), 0);
+  };
+
+  const calculateTotalSpending = (studentId: string): number => {
+    return usageHistory
+      .filter((h: UsageHistory) => h.studentId === studentId && h.status === 'completed')
+      .reduce((sum: number, h: UsageHistory) => sum + (h.spending || 0), 0);
   };
 
   const getStats = (): { totalWashes: number; totalMinutes: number; mostUsedMode: Record<string, number> } => {
@@ -1643,41 +1731,88 @@ const KYWashSystem = () => {
 
             {/* Usage History View */}
             {currentView === 'history' && user && (
-              <div className={`rounded-lg shadow-md p-6 transition-colors ${
-                darkMode ? 'bg-gray-800' : 'bg-white'
-              }`}>
-                <h2 className={`text-2xl font-bold mb-4 flex items-center gap-2 ${
-                  darkMode ? 'text-white' : 'text-gray-800'
-                }`}>
-                  <History className="w-6 h-6" />
-                  Usage History
-                </h2>
-                {usageHistory.filter((h: UsageHistory) => h.studentId === user!.studentId).length === 0 ? (
-                  <p className={`${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>No usage history</p>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className={`w-full text-sm ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
-                      <thead className={`${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
-                        <tr>
-                          <th className={`px-4 py-2 text-left ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Machine</th>
-                          <th className={`px-4 py-2 text-left ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Mode</th>
-                          <th className={`px-4 py-2 text-left ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Duration</th>
-                          <th className={`px-4 py-2 text-left ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Date</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {usageHistory.filter((h: UsageHistory) => h.studentId === user!.studentId).map((record: UsageHistory) => (
-                          <tr key={record.id} className={`border-b ${darkMode ? 'border-gray-700 hover:bg-gray-700' : 'border-gray-200 hover:bg-gray-50'}`}>
-                            <td className={`px-4 py-2 font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{record.machineType} {record.machineId}</td>
-                            <td className={`px-4 py-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{record.mode}</td>
-                            <td className={`px-4 py-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{record.duration} min</td>
-                            <td className={`px-4 py-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{record.date}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+              <div className="space-y-6">
+                {/* Spending Summary */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className={`rounded-lg shadow-md p-6 text-center transition-colors ${
+                    darkMode ? 'bg-gray-800' : 'bg-white'
+                  }`}>
+                    <p className={`text-sm mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Weekly Spending</p>
+                    <p className={`text-3xl font-bold ${darkMode ? 'text-green-400' : 'text-green-600'}`}>
+                      RM{calculateWeeklySpending(user.studentId).toFixed(2)}
+                    </p>
                   </div>
-                )}
+                  <div className={`rounded-lg shadow-md p-6 text-center transition-colors ${
+                    darkMode ? 'bg-gray-800' : 'bg-white'
+                  }`}>
+                    <p className={`text-sm mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Monthly Spending</p>
+                    <p className={`text-3xl font-bold ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+                      RM{calculateMonthlySpending(user.studentId).toFixed(2)}
+                    </p>
+                  </div>
+                  <div className={`rounded-lg shadow-md p-6 text-center transition-colors ${
+                    darkMode ? 'bg-gray-800' : 'bg-white'
+                  }`}>
+                    <p className={`text-sm mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Total Spending</p>
+                    <p className={`text-3xl font-bold ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}>
+                      RM{calculateTotalSpending(user.studentId).toFixed(2)}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Usage History Table */}
+                <div className={`rounded-lg shadow-md p-6 transition-colors ${
+                  darkMode ? 'bg-gray-800' : 'bg-white'
+                }`}>
+                  <h2 className={`text-2xl font-bold mb-4 flex items-center gap-2 ${
+                    darkMode ? 'text-white' : 'text-gray-800'
+                  }`}>
+                    <History className="w-6 h-6" />
+                    Usage History
+                  </h2>
+                  {usageHistory.filter((h: UsageHistory) => h.studentId === user!.studentId).length === 0 ? (
+                    <p className={`${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>No usage history</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className={`w-full text-sm ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
+                        <thead className={`${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                          <tr>
+                            <th className={`px-4 py-2 text-left ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Machine</th>
+                            <th className={`px-4 py-2 text-left ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Mode</th>
+                            <th className={`px-4 py-2 text-left ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Duration</th>
+                            <th className={`px-4 py-2 text-left ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Spending</th>
+                            <th className={`px-4 py-2 text-left ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Status</th>
+                            <th className={`px-4 py-2 text-left ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Date</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {usageHistory.filter((h: UsageHistory) => h.studentId === user!.studentId).map((record: UsageHistory) => (
+                            <tr key={record.id} className={`border-b ${darkMode ? 'border-gray-700 hover:bg-gray-700' : 'border-gray-200 hover:bg-gray-50'}`}>
+                              <td className={`px-4 py-2 font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{record.machineType} {record.machineId}</td>
+                              <td className={`px-4 py-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{record.mode}</td>
+                              <td className={`px-4 py-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{record.duration} min</td>
+                              <td className={`px-4 py-2 font-semibold ${
+                                record.status === 'cancelled' 
+                                  ? darkMode ? 'text-gray-400' : 'text-gray-500'
+                                  : darkMode ? 'text-green-400' : 'text-green-600'
+                              }`}>
+                                {record.status === 'cancelled' ? '-' : `RM${record.spending || 0}`}
+                              </td>
+                              <td className={`px-4 py-2 font-medium ${
+                                record.status === 'cancelled'
+                                  ? darkMode ? 'text-red-400' : 'text-red-600'
+                                  : darkMode ? 'text-green-400' : 'text-green-600'
+                              }`}>
+                                {record.status === 'cancelled' ? 'Cancelled' : 'Completed'}
+                              </td>
+                              <td className={`px-4 py-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{record.date}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 

@@ -24,6 +24,7 @@ export interface Machine {
   locked: boolean;
   userStudentId: string;
   userPhone: string;
+  originalDuration?: number;
 }
 
 export interface WaitlistEntry {

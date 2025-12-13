@@ -1,8 +1,8 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getAppState, updateAppState } from '@/lib/sharedState';
 
-// Track timer intervals globally for each machine
-const timerIntervals: Map<string, NodeJS.Timeout> = new Map();
+// Track machine start times for accurate timer calculation based on system clock
+const machineStartTimes: Map<string, number> = new Map();
 // Global server timer that runs continuously
 let globalServerTimer: NodeJS.Timeout | null = null;
 
@@ -11,19 +11,35 @@ function initializeGlobalTimer() {
     return; // Already initialized
   }
   
-  // Run a global timer every 1 second to decrement all running machines
+  // Run a global timer every 1 second to decrement all running machines based on system time
   globalServerTimer = setInterval(() => {
     const state = getAppState();
+    const now = Date.now();
     let stateChanged = false;
     
     state.machines.forEach((machine) => {
-      if (machine.status === 'running' && machine.timeLeft > 0) {
-        machine.timeLeft = Math.max(0, machine.timeLeft - 1);
-        stateChanged = true;
-        
-        // If timer reached 0, transition to pending-collection
-        if (machine.timeLeft === 0) {
-          machine.status = 'pending-collection';
+      const key = `${machine.type}-${machine.id}`;
+      
+      if (machine.status === 'running') {
+        const startTime = machineStartTimes.get(key);
+        if (startTime !== undefined) {
+          // Calculate time elapsed in seconds based on system clock
+          const elapsedSeconds = Math.floor((now - startTime) / 1000);
+          const totalDurationSeconds = machine.originalDuration ? machine.originalDuration * 60 : machine.timeLeft;
+          
+          // Calculate remaining time based on system clock
+          const newTimeLeft = Math.max(0, totalDurationSeconds - elapsedSeconds);
+          
+          if (newTimeLeft !== machine.timeLeft) {
+            machine.timeLeft = newTimeLeft;
+            stateChanged = true;
+          }
+          
+          // If timer reached 0, transition to pending-collection
+          if (machine.timeLeft === 0 && machine.status === 'running') {
+            machine.status = 'pending-collection';
+            stateChanged = true;
+          }
         }
       }
     });
@@ -34,18 +50,18 @@ function initializeGlobalTimer() {
   }, 1000);
 }
 
-function startServerTimer(machineId: string, machineType: string) {
+function startServerTimer(machineId: string, machineType: string, initialDuration: number) {
+  const key = `${machineType}-${machineId}`;
+  // Record the exact time when machine starts (system clock based)
+  machineStartTimes.set(key, Date.now());
+  
   // Initialize global timer if not already done
   initializeGlobalTimer();
 }
 
 function stopServerTimer(machineId: string, machineType: string) {
-  // Global timer continues running - it's not per-machine anymore
   const key = `${machineType}-${machineId}`;
-  if (timerIntervals.has(key)) {
-    clearInterval(timerIntervals.get(key));
-    timerIntervals.delete(key);
-  }
+  machineStartTimes.delete(key);
 }
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -79,9 +95,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             (m) => m.id === data.machineId && m.type === data.machineType
           );
           if (machine && machine.status === 'available') {
+            const durationInSeconds = data.duration * 60;
             machine.status = 'running';
             machine.mode = data.mode;
-            machine.timeLeft = data.duration * 60;
+            machine.timeLeft = durationInSeconds;
+            machine.originalDuration = data.duration; // Store original duration for accurate timer
             machine.userStudentId = data.studentId;
             machine.userPhone = data.phoneNumber;
             
@@ -93,8 +111,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
               (entry) => entry.studentId !== data.studentId
             );
             
-            // Start server-side timer
-            startServerTimer(data.machineId, data.machineType);
+            // Start server-side timer with duration info
+            startServerTimer(String(data.machineId), data.machineType, data.duration);
           }
           break;
         }
