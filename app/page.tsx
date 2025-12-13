@@ -257,8 +257,8 @@ const KYWashSystem = () => {
     // Fetch initial state
     fetchState();
 
-    // Poll every 5 seconds for state updates (not every 1 second to avoid overwriting timer ticks)
-    pollingIntervalRef.current = setInterval(fetchState, 5000);
+    // Poll every 1 second for state updates to keep timer perfectly in sync
+    pollingIntervalRef.current = setInterval(fetchState, 1000);
 
     return () => {
       if (pollingIntervalRef.current) {
@@ -267,42 +267,27 @@ const KYWashSystem = () => {
     };
   }, []);
 
-  // Timer countdown effect - only for UI display since server handles actual countdown
-  useEffect(() => {
-    const timerInterval = setInterval(() => {
-      setMachines((prevMachines: Machine[]) => {
-        const updatedMachines = prevMachines.map((machine: Machine) => {
-          // Only update UI if server hasn't marked as pending-collection yet
-          if (machine.status === 'running' && machine.timeLeft > 0) {
-            const newTimeLeft = machine.timeLeft - 1;
-            
-            // Server timer is source of truth - we'll get updates via polling
-            // This is just for smoother UI display between polling intervals (every 5 seconds)
-            
-            if (newTimeLeft === 0) {
-              // Timer completed - transition to pending-collection
-              playNotificationSound();
-              showNotification(`${machine.type.charAt(0).toUpperCase() + machine.type.slice(1)} ${machine.id} washing is complete! Please collect your clothes.`);
-              
-              return { 
-                ...machine, 
-                status: 'pending-collection' as const, 
-                timeLeft: 0,
-                originalDuration: machine.originalDuration || 0,
-                cancellable: false
-              };
-            }
-            
-            return { ...machine, timeLeft: newTimeLeft };
-          }
-          return machine;
-        });
-        return updatedMachines;
-      });
-    }, 1000);
+  // Track machines that have already triggered completion notification
+  const notifiedMachinesRef = useRef<Set<string>>(new Set());
 
-    return () => clearInterval(timerInterval);
-  }, []);
+  // Monitor for completion and trigger notifications with alarm sound
+  useEffect(() => {
+    machines.forEach((machine) => {
+      const machineKey = `${machine.type}-${machine.id}`;
+      
+      // Check if machine just completed (transitioned to pending-collection)
+      if (machine.status === 'pending-collection' && !notifiedMachinesRef.current.has(machineKey)) {
+        notifiedMachinesRef.current.add(machineKey);
+        playNotificationSound();
+        showNotification(`${machine.type.charAt(0).toUpperCase() + machine.type.slice(1)} ${machine.id} is complete! Please collect your clothes.`);
+      }
+      
+      // Reset notification flag when machine becomes available again
+      if (machine.status === 'available' && notifiedMachinesRef.current.has(machineKey)) {
+        notifiedMachinesRef.current.delete(machineKey);
+      }
+    });
+  }, [machines]);
 
   const playNotificationSound = (): void => {
     try {
@@ -313,18 +298,19 @@ const KYWashSystem = () => {
       oscillator.connect(gainNode);
       gainNode.connect(audioContext.destination);
       
-      // Play alarm sound sequence (beep beep beep)
+      // Play loud alarm sound sequence (multiple beeps)
       oscillator.frequency.value = 1000;
       oscillator.type = 'sine';
       
       const now = audioContext.currentTime;
-      for (let i = 0; i < 3; i++) {
-        gainNode.gain.setValueAtTime(0.5, now + i * 0.3);
-        gainNode.gain.setValueAtTime(0, now + i * 0.3 + 0.15);
+      // Play 5 loud beeps with 0.2 second duration each
+      for (let i = 0; i < 5; i++) {
+        gainNode.gain.setValueAtTime(0.8, now + i * 0.4); // Louder volume (0.8 instead of 0.5)
+        gainNode.gain.setValueAtTime(0, now + i * 0.4 + 0.2); // Longer beep duration
       }
       
       oscillator.start(now);
-      oscillator.stop(now + 1.0);
+      oscillator.stop(now + 2.0); // Extended stop time for all 5 beeps
     } catch (error) {
       console.error('Failed to play notification sound:', error);
     }
@@ -1122,6 +1108,64 @@ const KYWashSystem = () => {
                     )}
                   </div>
                 ))}
+              </div>
+            </div>
+
+            {/* Waitlists (Admin View) */}
+            <div className={`rounded-lg shadow-md p-6 transition-colors ${
+              darkMode ? 'bg-gray-800' : 'bg-white'
+            }`}>
+              <h2 className="text-2xl font-bold mb-4 flex items-center gap-2">
+                <Users className="w-6 h-6" />
+                Waiting Lists
+              </h2>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Washer Waitlist */}
+                <div>
+                  <h3 className="text-lg font-semibold mb-3">Washer Waitlist ({waitlists.washers.length})</h3>
+                  {waitlists.washers.length === 0 ? (
+                    <p className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No students waiting for washers</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {waitlists.washers.map((entry: WaitlistEntry, idx: number) => (
+                        <div key={`washer-waitlist-${entry.studentId}-${idx}`} className={`p-3 rounded-lg border transition-colors ${
+                          darkMode ? 'bg-gray-700 border-gray-600' : 'bg-gray-100 border-gray-300'
+                        }`}>
+                          <p className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-800'}`}>
+                            Position #{idx + 1}: {entry.studentId}
+                          </p>
+                          <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            Phone: {entry.phone}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Dryer Waitlist */}
+                <div>
+                  <h3 className="text-lg font-semibold mb-3">Dryer Waitlist ({waitlists.dryers.length})</h3>
+                  {waitlists.dryers.length === 0 ? (
+                    <p className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No students waiting for dryers</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {waitlists.dryers.map((entry: WaitlistEntry, idx: number) => (
+                        <div key={`dryer-waitlist-${entry.studentId}-${idx}`} className={`p-3 rounded-lg border transition-colors ${
+                          darkMode ? 'bg-gray-700 border-gray-600' : 'bg-gray-100 border-gray-300'
+                        }`}>
+                          <p className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-800'}`}>
+                            Position #{idx + 1}: {entry.studentId}
+                          </p>
+                          <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            Phone: {entry.phone}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>

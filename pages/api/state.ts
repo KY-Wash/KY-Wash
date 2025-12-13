@@ -1,45 +1,46 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getAppState, updateAppState } from '@/lib/sharedState';
 
-// Track timer intervals globally
+// Track timer intervals globally for each machine
 const timerIntervals: Map<string, NodeJS.Timeout> = new Map();
+// Global server timer that runs continuously
+let globalServerTimer: NodeJS.Timeout | null = null;
 
-function startServerTimer(machineId: string, machineType: string) {
-  const key = `${machineType}-${machineId}`;
-  
-  // Clear existing timer if any
-  if (timerIntervals.has(key)) {
-    clearInterval(timerIntervals.get(key));
+function initializeGlobalTimer() {
+  if (globalServerTimer) {
+    return; // Already initialized
   }
   
-  // Create new timer that decrements every 1 second
-  const interval = setInterval(() => {
+  // Run a global timer every 1 second to decrement all running machines
+  globalServerTimer = setInterval(() => {
     const state = getAppState();
-    const machine = state.machines.find((m) => m.id === machineId && m.type === machineType);
+    let stateChanged = false;
     
-    if (machine && machine.status === 'running' && machine.timeLeft > 0) {
-      machine.timeLeft = Math.max(0, machine.timeLeft - 1);
-      updateAppState(state);
-      
-      // If timer reached 0, transition to pending-collection
-      if (machine.timeLeft === 0) {
-        machine.status = 'pending-collection';
-        updateAppState(state);
-        // Stop the timer
-        clearInterval(interval);
-        timerIntervals.delete(key);
+    state.machines.forEach((machine) => {
+      if (machine.status === 'running' && machine.timeLeft > 0) {
+        machine.timeLeft = Math.max(0, machine.timeLeft - 1);
+        stateChanged = true;
+        
+        // If timer reached 0, transition to pending-collection
+        if (machine.timeLeft === 0) {
+          machine.status = 'pending-collection';
+        }
       }
-    } else if (machine && machine.status !== 'running') {
-      // Stop timer if machine is no longer running
-      clearInterval(interval);
-      timerIntervals.delete(key);
+    });
+    
+    if (stateChanged) {
+      updateAppState(state);
     }
   }, 1000);
-  
-  timerIntervals.set(key, interval);
+}
+
+function startServerTimer(machineId: string, machineType: string) {
+  // Initialize global timer if not already done
+  initializeGlobalTimer();
 }
 
 function stopServerTimer(machineId: string, machineType: string) {
+  // Global timer continues running - it's not per-machine anymore
   const key = `${machineType}-${machineId}`;
   if (timerIntervals.has(key)) {
     clearInterval(timerIntervals.get(key));
