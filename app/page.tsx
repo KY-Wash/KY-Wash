@@ -97,10 +97,14 @@ const KYWashSystem = () => {
   const [selectedMachine, setSelectedMachine] = useState<Machine | null>(null);
   const [usageHistory, setUsageHistory] = useState<UsageHistory[]>([]);
   const [showEditProfile, setShowEditProfile] = useState<boolean>(false);
+  const [editProfilePhone, setEditProfilePhone] = useState<string>('');
+  const [editProfilePassword, setEditProfilePassword] = useState<string>('');
+  const [editProfilePasswordConfirm, setEditProfilePasswordConfirm] = useState<string>('');
   const [reportedIssues, setReportedIssues] = useState<ReportedIssue[]>([]);
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const [expandedWasherWaitlist, setExpandedWasherWaitlist] = useState<boolean>(false);
   const [expandedDryerWaitlist, setExpandedDryerWaitlist] = useState<boolean>(false);
+  const [adminChangesUnsaved, setAdminChangesUnsaved] = useState<boolean>(false);
 
   const modes: Mode[] = [
     { name: 'Normal', duration: 30 },
@@ -263,8 +267,8 @@ const KYWashSystem = () => {
     // Fetch initial state
     fetchState();
 
-    // Poll every 1 second for state updates to keep timer perfectly in sync
-    pollingIntervalRef.current = setInterval(fetchState, 1000);
+    // Poll every 500ms (twice per second) for smooth timer display every 1 second
+    pollingIntervalRef.current = setInterval(fetchState, 500);
 
     return () => {
       if (pollingIntervalRef.current) {
@@ -385,19 +389,56 @@ const KYWashSystem = () => {
       return;
     }
 
-    // Password validation - check against hardcoded passwords for each student
-    // For MVP, each student ID has a specific password they set
-    // In production, this would query a database with hashed passwords
-    const validPasswords: { [key: string]: string } = {
-      '12345678': '12345678', // Student 1
-      '87654321': '87654321', // Student 2
-      // Add more as needed - in production use database
+    // In-memory user database for passwords and phones
+    const userDatabase: { [key: string]: { phone: string; password: string } } = {
+      '123456': { phone: '01234567890', password: '12345678' },
+      '234567': { phone: '01987654321', password: '87654321' },
+      // Add more users as needed
     };
-    
-    const correctPassword = validPasswords[studentId];
-    if (!correctPassword) {
-      // If no hardcoded password, accept any valid format on first login (registration)
-      // In production, would need explicit registration flow
+
+    if (isRegistering) {
+      // REGISTRATION MODE
+      if (userDatabase[studentId]) {
+        setError('This Student ID is already registered. Please login instead.');
+        return;
+      }
+      
+      // Register new user
+      userDatabase[studentId] = { phone: phoneNumber, password: password };
+      setLoading(true);
+      setTimeout(() => {
+        setUser({ studentId, phoneNumber });
+        setShowLogin(false);
+        setCurrentView('main');
+        setStudentId('');
+        setPhoneNumber('');
+        setPassword('');
+        setIsRegistering(false);
+        setLoading(false);
+        showNotification('Account created successfully!');
+      }, 500);
+    } else {
+      // LOGIN MODE
+      const userRecord = userDatabase[studentId];
+      
+      if (!userRecord) {
+        setError('Student ID not found. Please create a new account.');
+        return;
+      }
+      
+      // Validate phone number
+      if (userRecord.phone !== phoneNumber) {
+        setError('Phone number is incorrect for this account.');
+        return;
+      }
+      
+      // Validate password
+      if (userRecord.password !== password) {
+        setError('Password is incorrect.');
+        return;
+      }
+      
+      // Login successful
       setLoading(true);
       setTimeout(() => {
         setUser({ studentId, phoneNumber });
@@ -407,26 +448,9 @@ const KYWashSystem = () => {
         setPhoneNumber('');
         setPassword('');
         setLoading(false);
+        showNotification('Login successful!');
       }, 500);
-      return;
     }
-    
-    // Verify password matches
-    if (password !== correctPassword) {
-      setError('Invalid password for this student ID');
-      return;
-    }
-
-    setLoading(true);
-    setTimeout(() => {
-      setUser({ studentId, phoneNumber });
-      setShowLogin(false);
-      setCurrentView('main');
-      setStudentId('');
-      setPhoneNumber('');
-      setPassword('');
-      setLoading(false);
-    }, 500);
   };
 
   const handleAdminLogin = (): void => {
@@ -680,17 +704,25 @@ const KYWashSystem = () => {
         ? { ...machine, status: newStatus, locked: newStatus === 'maintenance' }
         : machine
     ));
+    
+    // Mark that admin has made changes that need to be saved
+    setAdminChangesUnsaved(true);
+  };
 
-    // Emit admin update to API
-    if (socketRef.current?.emit) {
-      socketRef.current.emit('admin-update-machine', {
-        machineId: String(machineId),
-        machineType: machineType,
-        status: newStatus,
-      });
-    }
-
-    showNotification(`Machine ${machineType} ${machineId} updated to ${newStatus}.`);
+  const saveAdminChanges = (): void => {
+    // Emit all current machine states to API
+    machines.forEach((machine: Machine) => {
+      if (socketRef.current?.emit) {
+        socketRef.current.emit('admin-update-machine', {
+          machineId: String(machine.id),
+          machineType: machine.type,
+          status: machine.status,
+        });
+      }
+    });
+    
+    setAdminChangesUnsaved(false);
+    showNotification('All changes saved permanently!');
   };
 
   const clothesCollected = (machineId: number, machineType: 'washer' | 'dryer'): void => {
@@ -984,9 +1016,74 @@ const KYWashSystem = () => {
                   Back to User Login
                 </button>
               </>
-            ) : (
+            ) : isRegistering ? (
+              // REGISTRATION FORM
               <>
-                <h2 className="text-2xl font-bold mb-6 text-center">{isRegistering ? 'Register' : 'Login'}</h2>
+                <h2 className="text-2xl font-bold mb-6 text-center">Create New Account</h2>
+                <div className="mb-4">
+                  <label className="block text-sm font-medium mb-2">Student ID (6 digits)</label>
+                  <input
+                    type="text"
+                    value={studentId}
+                    onChange={(e) => setStudentId(e.target.value.slice(0, 6))}
+                    maxLength={6}
+                    className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+                      darkMode ? 'bg-gray-700 text-white border-gray-600' : 'bg-white text-black border-gray-300'
+                    }`}
+                    placeholder="123456"
+                  />
+                </div>
+                <div className="mb-4">
+                  <label className="block text-sm font-medium mb-2">Phone (10-11 digits)</label>
+                  <input
+                    type="text"
+                    value={phoneNumber}
+                    onChange={(e) => setPhoneNumber(e.target.value.slice(0, 11))}
+                    maxLength={11}
+                    className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+                      darkMode ? 'bg-gray-700 text-white border-gray-600' : 'bg-white text-black border-gray-300'
+                    }`}
+                    placeholder="01234567890"
+                  />
+                </div>
+                <div className="mb-4">
+                  <label className="block text-sm font-medium mb-2">Password (8 digits)</label>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value.slice(0, 8))}
+                    maxLength={8}
+                    className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+                      darkMode ? 'bg-gray-700 text-white border-gray-600' : 'bg-white text-black border-gray-300'
+                    }`}
+                    placeholder="12345678"
+                  />
+                </div>
+                {error && <div className="text-red-400 text-sm mb-4">{error}</div>}
+                <button
+                  onClick={handleLogin}
+                  disabled={loading}
+                  className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {loading ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : 'Create Account'}
+                </button>
+                <button
+                  onClick={() => {
+                    setIsRegistering(false);
+                    setStudentId('');
+                    setPhoneNumber('');
+                    setPassword('');
+                    setError('');
+                  }}
+                  className="w-full mt-2 text-blue-600 hover:text-blue-700"
+                >
+                  Back to Login
+                </button>
+              </>
+            ) : (
+              // LOGIN FORM
+              <>
+                <h2 className="text-2xl font-bold mb-6 text-center">Login to Your Account</h2>
                 <div className="mb-4">
                   <label className="block text-sm font-medium mb-2">Student ID (6 digits)</label>
                   <input
@@ -1036,6 +1133,18 @@ const KYWashSystem = () => {
                   {loading ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : 'Login'}
                 </button>
                 <button
+                  onClick={() => {
+                    setIsRegistering(true);
+                    setStudentId('');
+                    setPhoneNumber('');
+                    setPassword('');
+                    setError('');
+                  }}
+                  className="w-full mt-2 text-blue-600 hover:text-blue-700"
+                >
+                  Create New Account
+                </button>
+                <button
                   onClick={() => setShowAdminLogin(true)}
                   className="w-full mt-2 text-sm text-blue-600 hover:text-blue-700"
                 >
@@ -1055,10 +1164,29 @@ const KYWashSystem = () => {
             <div className={`rounded-lg shadow-md p-6 transition-colors ${
               darkMode ? 'bg-gray-800' : 'bg-white'
             }`}>
-              <h2 className="text-2xl font-bold mb-4 flex items-center gap-2">
-                <Settings className="w-6 h-6" />
-                Machine Availability Control
-              </h2>
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-2xl font-bold flex items-center gap-2">
+                  <Settings className="w-6 h-6" />
+                  Machine Availability Control
+                </h2>
+                {adminChangesUnsaved && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={saveAdminChanges}
+                      className={`px-4 py-2 rounded-lg font-semibold transition-colors ${
+                        darkMode ? 'bg-green-600 hover:bg-green-700 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
+                      }`}
+                    >
+                      Save Changes
+                    </button>
+                    <span className={`px-3 py-2 rounded-lg font-semibold ${
+                      darkMode ? 'bg-yellow-900 text-yellow-300' : 'bg-yellow-100 text-yellow-800'
+                    }`}>
+                      Unsaved Changes
+                    </span>
+                  </div>
+                )}
+              </div>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {/* Washers */}
@@ -2089,23 +2217,87 @@ const KYWashSystem = () => {
                 />
               </div>
               <div>
-                <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Phone</label>
+                <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Phone Number</label>
                 <input
                   type="text"
-                  value={user.phoneNumber}
-                  disabled
-                  className={`w-full px-4 py-2 border rounded-lg cursor-not-allowed transition-colors ${
-                    darkMode ? 'bg-gray-700 text-gray-400 border-gray-600' : 'bg-gray-100 text-gray-600 border-gray-300'
-                  }`}
+                  value={editProfilePhone}
+                  onChange={(e) => setEditProfilePhone(e.target.value)}
+                  placeholder="Enter new phone number (10-11 digits)"
+                  className={`w-full px-4 py-2 border rounded-lg transition-colors ${
+                    darkMode ? 'bg-gray-700 text-white border-gray-600 focus:border-blue-500' : 'bg-white text-black border-gray-300 focus:border-blue-500'
+                  } focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                />
+              </div>
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>New Password</label>
+                <input
+                  type="password"
+                  value={editProfilePassword}
+                  onChange={(e) => setEditProfilePassword(e.target.value)}
+                  placeholder="Enter new password (8 digits)"
+                  className={`w-full px-4 py-2 border rounded-lg transition-colors ${
+                    darkMode ? 'bg-gray-700 text-white border-gray-600 focus:border-blue-500' : 'bg-white text-black border-gray-300 focus:border-blue-500'
+                  } focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                />
+              </div>
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Confirm Password</label>
+                <input
+                  type="password"
+                  value={editProfilePasswordConfirm}
+                  onChange={(e) => setEditProfilePasswordConfirm(e.target.value)}
+                  placeholder="Confirm new password"
+                  className={`w-full px-4 py-2 border rounded-lg transition-colors ${
+                    darkMode ? 'bg-gray-700 text-white border-gray-600 focus:border-blue-500' : 'bg-white text-black border-gray-300 focus:border-blue-500'
+                  } focus:outline-none focus:ring-2 focus:ring-blue-500`}
                 />
               </div>
               <button
-                onClick={() => setShowEditProfile(false)}
+                onClick={() => {
+                  if (editProfilePhone && !validatePhone(editProfilePhone)) {
+                    setError('Phone must be 10-11 digits');
+                    return;
+                  }
+                  if (editProfilePassword && !validatePassword(editProfilePassword)) {
+                    setError('Password must be 8 digits');
+                    return;
+                  }
+                  if (editProfilePassword !== editProfilePasswordConfirm) {
+                    setError('Passwords do not match');
+                    return;
+                  }
+                  
+                  // Update user profile
+                  if (editProfilePhone) {
+                    setUser({ ...user, phoneNumber: editProfilePhone });
+                  }
+                  
+                  showNotification('Profile updated successfully!');
+                  setShowEditProfile(false);
+                  setEditProfilePhone('');
+                  setEditProfilePassword('');
+                  setEditProfilePasswordConfirm('');
+                  setError('');
+                }}
+                className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors ${
+                  darkMode ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-blue-500 text-white hover:bg-blue-600'
+                }`}
+              >
+                Save Changes
+              </button>
+              <button
+                onClick={() => {
+                  setShowEditProfile(false);
+                  setEditProfilePhone('');
+                  setEditProfilePassword('');
+                  setEditProfilePasswordConfirm('');
+                  setError('');
+                }}
                 className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors ${
                   darkMode ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' : 'bg-gray-300 text-gray-700 hover:bg-gray-400'
                 }`}
               >
-                Close
+                Cancel
               </button>
             </div>
           </div>
