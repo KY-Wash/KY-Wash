@@ -98,6 +98,7 @@ const KYWashSystem = () => {
   const [usageHistory, setUsageHistory] = useState<UsageHistory[]>([]);
   const [showEditProfile, setShowEditProfile] = useState<boolean>(false);
   const [editProfilePhone, setEditProfilePhone] = useState<string>('');
+  const [editProfileStudentId, setEditProfileStudentId] = useState<string>('');
   const [editProfilePassword, setEditProfilePassword] = useState<string>('');
   const [editProfilePasswordConfirm, setEditProfilePasswordConfirm] = useState<string>('');
   const [reportedIssues, setReportedIssues] = useState<ReportedIssue[]>([]);
@@ -115,6 +116,12 @@ const KYWashSystem = () => {
   const socketRef = useRef<{ emit: (event: string, data: any) => Promise<void> } | null>(null);
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const adminChangesUnsavedRef = useRef<boolean>(false);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    adminChangesUnsavedRef.current = adminChangesUnsaved;
+  }, [adminChangesUnsaved]);
 
   // Initialize real-time sync with polling
   useEffect(() => {
@@ -207,20 +214,43 @@ const KYWashSystem = () => {
         if (response.ok) {
           const newState = await response.json();
 
-          // Update machines - preserve originalDuration if present
-          setMachines(
-            newState.machines.map((m: any) => ({
-              id: parseInt(m.id),
-              type: m.type,
-              status: m.status,
-              timeLeft: m.timeLeft,
-              mode: m.mode || null,
-              locked: m.locked,
-              userStudentId: m.userStudentId || null,
-              userPhone: m.userPhone || null,
-              originalDuration: m.originalDuration || undefined,
-            }))
-          );
+          // Only update machines from API if admin hasn't made unsaved changes
+          // This prevents reverting admin's maintenance/available toggle changes
+          if (!adminChangesUnsavedRef.current) {
+            setMachines(
+              newState.machines.map((m: any) => ({
+                id: parseInt(m.id),
+                type: m.type,
+                status: m.status,
+                timeLeft: m.timeLeft,
+                mode: m.mode || null,
+                locked: m.locked,
+                userStudentId: m.userStudentId || null,
+                userPhone: m.userPhone || null,
+                originalDuration: m.originalDuration || undefined,
+              }))
+            );
+          } else {
+            // Only update timeLeft, mode, and user info - don't touch status/locked
+            setMachines((prevMachines) => 
+              prevMachines.map((prevMachine) => {
+                const newMachine = newState.machines.find(
+                  (m: any) => parseInt(m.id) === prevMachine.id && m.type === prevMachine.type
+                );
+                if (newMachine) {
+                  return {
+                    ...prevMachine,
+                    timeLeft: newMachine.timeLeft,
+                    mode: newMachine.mode || null,
+                    userStudentId: newMachine.userStudentId || null,
+                    userPhone: newMachine.userPhone || null,
+                    originalDuration: newMachine.originalDuration || undefined,
+                  };
+                }
+                return prevMachine;
+              })
+            );
+          }
 
           // Update waitlists
           setWaitlists({
@@ -275,6 +305,28 @@ const KYWashSystem = () => {
         clearInterval(pollingIntervalRef.current);
       }
     };
+  }, []);
+
+  // Persist usage history to localStorage whenever it changes
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('kyWashUsageHistory', JSON.stringify(usageHistory));
+    }
+  }, [usageHistory]);
+
+  // Load usage history from localStorage on component mount
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const savedHistory = localStorage.getItem('kyWashUsageHistory');
+      if (savedHistory) {
+        try {
+          const parsedHistory = JSON.parse(savedHistory);
+          setUsageHistory(parsedHistory);
+        } catch (error) {
+          console.error('Failed to load history from localStorage:', error);
+        }
+      }
+    }
   }, []);
 
   // Track machines that have already triggered completion notification
@@ -522,7 +574,7 @@ const KYWashSystem = () => {
       status: 'completed'
     }]);
 
-    showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} started! Charge: RM${spending}`);
+    showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} started! Phone: ${user.phoneNumber} | Charge: RM${spending}`);
   };
 
   const cancelMachine = (machineId: number, machineType: 'washer' | 'dryer'): void => {
@@ -1426,7 +1478,11 @@ const KYWashSystem = () => {
                 Stats
               </button>
               <button
-                onClick={() => setShowEditProfile(true)}
+                onClick={() => {
+                  setShowEditProfile(true);
+                  setEditProfileStudentId('');
+                  setEditProfilePhone('');
+                }}
                 className={`px-4 py-2 rounded-lg font-medium transition ${
                   darkMode ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' : 'bg-white text-gray-700 hover:bg-gray-100'
                 }`}
@@ -2209,11 +2265,12 @@ const KYWashSystem = () => {
                 <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Student ID</label>
                 <input
                   type="text"
-                  value={user.studentId}
-                  disabled
-                  className={`w-full px-4 py-2 border rounded-lg cursor-not-allowed transition-colors ${
-                    darkMode ? 'bg-gray-700 text-gray-400 border-gray-600' : 'bg-gray-100 text-gray-600 border-gray-300'
-                  }`}
+                  value={editProfileStudentId || user.studentId}
+                  onChange={(e) => setEditProfileStudentId(e.target.value)}
+                  placeholder="Enter new student ID"
+                  className={`w-full px-4 py-2 border rounded-lg transition-colors ${
+                    darkMode ? 'bg-gray-700 text-white border-gray-600 focus:border-blue-500' : 'bg-white text-black border-gray-300 focus:border-blue-500'
+                  } focus:outline-none focus:ring-2 focus:ring-blue-500`}
                 />
               </div>
               <div>
@@ -2268,12 +2325,16 @@ const KYWashSystem = () => {
                   }
                   
                   // Update user profile
+                  if (editProfileStudentId) {
+                    setUser({ ...user, studentId: editProfileStudentId });
+                  }
                   if (editProfilePhone) {
-                    setUser({ ...user, phoneNumber: editProfilePhone });
+                    setUser((prevUser) => prevUser ? { ...prevUser, phoneNumber: editProfilePhone } : prevUser);
                   }
                   
                   showNotification('Profile updated successfully!');
                   setShowEditProfile(false);
+                  setEditProfileStudentId('');
                   setEditProfilePhone('');
                   setEditProfilePassword('');
                   setEditProfilePasswordConfirm('');
@@ -2288,6 +2349,7 @@ const KYWashSystem = () => {
               <button
                 onClick={() => {
                   setShowEditProfile(false);
+                  setEditProfileStudentId('');
                   setEditProfilePhone('');
                   setEditProfilePassword('');
                   setEditProfilePasswordConfirm('');
