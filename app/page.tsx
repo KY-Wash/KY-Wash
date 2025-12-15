@@ -63,7 +63,7 @@ interface Waitlists {
 
 const KYWashSystem = () => {
   const [user, setUser] = useState<User | null>(null);
-  const [currentView, setCurrentView] = useState<'main' | 'admin' | 'history' | 'stats'>('main' as 'main' | 'admin' | 'history' | 'stats');
+  const [currentView, setCurrentView] = useState<'main' | 'admin' | 'history' | 'stats' | 'dryer-stats'>('main' as 'main' | 'admin' | 'history' | 'stats' | 'dryer-stats');
   const [showLogin, setShowLogin] = useState<boolean>(true);
   const [isRegistering, setIsRegistering] = useState<boolean>(false);
   const [studentId, setStudentId] = useState<string>('');
@@ -105,23 +105,21 @@ const KYWashSystem = () => {
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const [expandedWasherWaitlist, setExpandedWasherWaitlist] = useState<boolean>(false);
   const [expandedDryerWaitlist, setExpandedDryerWaitlist] = useState<boolean>(false);
-  const [adminChangesUnsaved, setAdminChangesUnsaved] = useState<boolean>(false);
 
-  const modes: Mode[] = [
+  const washerModes: Mode[] = [
     { name: 'Normal', duration: 30 },
     { name: 'Extra Wash', duration: 40 }
+  ];
+
+  const dryerModes: Mode[] = [
+    { name: 'Normal', duration: 30 },
+    { name: 'Extra Dry', duration: 40 }
   ];
 
   // Real-time sync with polling
   const socketRef = useRef<{ emit: (event: string, data: any) => Promise<void> } | null>(null);
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const adminChangesUnsavedRef = useRef<boolean>(false);
-
-  // Keep ref in sync with state
-  useEffect(() => {
-    adminChangesUnsavedRef.current = adminChangesUnsaved;
-  }, [adminChangesUnsaved]);
 
   // Initialize real-time sync with polling
   useEffect(() => {
@@ -214,43 +212,20 @@ const KYWashSystem = () => {
         if (response.ok) {
           const newState = await response.json();
 
-          // Only update machines from API if admin hasn't made unsaved changes
-          // This prevents reverting admin's maintenance/available toggle changes
-          if (!adminChangesUnsavedRef.current) {
-            setMachines(
-              newState.machines.map((m: any) => ({
-                id: parseInt(m.id),
-                type: m.type,
-                status: m.status,
-                timeLeft: m.timeLeft,
-                mode: m.mode || null,
-                locked: m.locked,
-                userStudentId: m.userStudentId || null,
-                userPhone: m.userPhone || null,
-                originalDuration: m.originalDuration || undefined,
-              }))
-            );
-          } else {
-            // Only update timeLeft, mode, and user info - don't touch status/locked
-            setMachines((prevMachines) => 
-              prevMachines.map((prevMachine) => {
-                const newMachine = newState.machines.find(
-                  (m: any) => parseInt(m.id) === prevMachine.id && m.type === prevMachine.type
-                );
-                if (newMachine) {
-                  return {
-                    ...prevMachine,
-                    timeLeft: newMachine.timeLeft,
-                    mode: newMachine.mode || null,
-                    userStudentId: newMachine.userStudentId || null,
-                    userPhone: newMachine.userPhone || null,
-                    originalDuration: newMachine.originalDuration || undefined,
-                  };
-                }
-                return prevMachine;
-              })
-            );
-          }
+          // Update machines from API
+          setMachines(
+            newState.machines.map((m: any) => ({
+              id: parseInt(m.id),
+              type: m.type,
+              status: m.status,
+              timeLeft: m.timeLeft,
+              mode: m.mode || null,
+              locked: m.locked,
+              userStudentId: m.userStudentId || null,
+              userPhone: m.userPhone || null,
+              originalDuration: m.originalDuration || undefined,
+            }))
+          );
 
           // Update waitlists
           setWaitlists({
@@ -314,6 +289,15 @@ const KYWashSystem = () => {
     }
   }, [usageHistory]);
 
+  // Persist user to localStorage whenever they login/logout
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      if (user) {
+        localStorage.setItem('kyWashUser', JSON.stringify(user));
+      }
+    }
+  }, [user]);
+
   // Load usage history from localStorage on component mount
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -324,6 +308,19 @@ const KYWashSystem = () => {
           setUsageHistory(parsedHistory);
         } catch (error) {
           console.error('Failed to load history from localStorage:', error);
+        }
+      }
+      
+      // Load persisted user login if available
+      const savedUser = localStorage.getItem('kyWashUser');
+      if (savedUser) {
+        try {
+          const parsedUser = JSON.parse(savedUser);
+          setUser(parsedUser);
+          setShowLogin(false);
+          setCurrentView('main');
+        } catch (error) {
+          console.error('Failed to load user from localStorage:', error);
         }
       }
     }
@@ -718,33 +715,6 @@ const KYWashSystem = () => {
     setReportedIssues((prev: ReportedIssue[]) => prev.filter((issue: ReportedIssue) => issue.id !== issueId));
   };
 
-  const changeMachineAvailability = (machineId: number, machineType: 'washer' | 'dryer', newStatus: 'available' | 'maintenance'): void => {
-    setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
-      machine.id === machineId && machine.type === machineType
-        ? { ...machine, status: newStatus, locked: newStatus === 'maintenance' }
-        : machine
-    ));
-    
-    // Mark that admin has made changes that need to be saved
-    setAdminChangesUnsaved(true);
-  };
-
-  const saveAdminChanges = (): void => {
-    // Emit all current machine states to API
-    machines.forEach((machine: Machine) => {
-      if (socketRef.current?.emit) {
-        socketRef.current.emit('admin-update-machine', {
-          machineId: String(machine.id),
-          machineType: machine.type,
-          status: machine.status,
-        });
-      }
-    });
-    
-    setAdminChangesUnsaved(false);
-    showNotification('All changes saved permanently!');
-  };
-
   const clothesCollected = (machineId: number, machineType: 'washer' | 'dryer'): void => {
     if (!user) return;
 
@@ -787,9 +757,9 @@ const KYWashSystem = () => {
       return { peakHours: [], suggestedHours: [], description: 'Not enough data to analyze patterns.' };
     }
 
-    const userHistory = usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId);
+    const userHistory = usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.machineType === 'washer');
     if (userHistory.length === 0) {
-      return { peakHours: [], suggestedHours: [], description: 'Start using machines to see pattern analysis.' };
+      return { peakHours: [], suggestedHours: [], description: 'Start using washers to see pattern analysis.' };
     }
 
     // Analyze when the user typically washes (by hour of day)
@@ -815,6 +785,43 @@ const KYWashSystem = () => {
       .sort();
 
     const description = `Your busiest washing times are around ${peakHours.map(h => `${h}:00`).join(', ')}. Consider washing between ${suggestedHours.map(h => `${h}:00`).join(' and ')} for shorter wait times.`;
+
+    return { peakHours, suggestedHours, description };
+  };
+
+  const analyzeDryingPatterns = (): { peakHours: number[]; suggestedHours: number[]; description: string } => {
+    if (!user || usageHistory.length === 0) {
+      return { peakHours: [], suggestedHours: [], description: 'Not enough data to analyze patterns.' };
+    }
+
+    const userHistory = usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.machineType === 'dryer');
+    if (userHistory.length === 0) {
+      return { peakHours: [], suggestedHours: [], description: 'Start using dryers to see pattern analysis.' };
+    }
+
+    // Analyze when the user typically dries (by hour of day)
+    const hourDistribution: Record<number, number> = {};
+    userHistory.forEach((record: UsageHistory) => {
+      const date = new Date(record.timestamp);
+      const hour = date.getHours();
+      hourDistribution[hour] = (hourDistribution[hour] || 0) + 1;
+    });
+
+    // Find peak hours (most usage)
+    const sortedHours = Object.entries(hourDistribution)
+      .sort(([, countA], [, countB]) => countB - countA)
+      .map(([hour]) => parseInt(hour));
+
+    const peakHours = sortedHours.slice(0, 3);
+    
+    // Suggest off-peak hours (least busy - typically late night or early morning)
+    const allHours = Array.from({ length: 24 }, (_, i) => i);
+    const suggestedHours = allHours
+      .filter(h => !peakHours.includes(h))
+      .slice(0, 3)
+      .sort();
+
+    const description = `Your busiest drying times are around ${peakHours.map(h => `${h}:00`).join(', ')}. Consider drying between ${suggestedHours.map(h => `${h}:00`).join(' and ')} for shorter wait times.`;
 
     return { peakHours, suggestedHours, description };
   };
@@ -887,7 +894,7 @@ const KYWashSystem = () => {
 
   const getSpendingForMode = (mode: string): number => {
     if (mode === 'Normal') return 5;
-    if (mode === 'Extra Wash') return 6;
+    if (mode.includes('Extra')) return 6; // Handles both 'Extra Wash' and 'Extra Dry'
     return 0;
   };
 
@@ -1180,32 +1187,15 @@ const KYWashSystem = () => {
           <div className="space-y-6">
             <h1 className={`text-3xl font-bold ${darkMode ? 'text-white' : 'text-gray-800'}`}>Admin Panel</h1>
 
-            {/* Machine Availability Control */}
+            {/* Machine Lock Control */}
             <div className={`rounded-lg shadow-md p-6 transition-colors ${
               darkMode ? 'bg-gray-800' : 'bg-white'
             }`}>
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-2xl font-bold flex items-center gap-2">
-                  <Settings className="w-6 h-6" />
-                  Machine Availability Control
+                  <Lock className="w-6 h-6" />
+                  Machine Lock Control
                 </h2>
-                {adminChangesUnsaved && (
-                  <div className="flex gap-2">
-                    <button
-                      onClick={saveAdminChanges}
-                      className={`px-4 py-2 rounded-lg font-semibold transition-colors ${
-                        darkMode ? 'bg-green-600 hover:bg-green-700 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
-                      }`}
-                    >
-                      Save Changes
-                    </button>
-                    <span className={`px-3 py-2 rounded-lg font-semibold ${
-                      darkMode ? 'bg-yellow-900 text-yellow-300' : 'bg-yellow-100 text-yellow-800'
-                    }`}>
-                      Unsaved Changes
-                    </span>
-                  </div>
-                )}
               </div>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1218,16 +1208,26 @@ const KYWashSystem = () => {
                         darkMode ? 'bg-gray-700' : 'bg-gray-100'
                       }`}>
                         <span className="font-medium">Washer {machine.id}</span>
-                        <select
-                          value={machine.status}
-                          onChange={(e) => changeMachineAvailability(machine.id, 'washer', e.target.value as 'available' | 'maintenance')}
-                          className={`px-3 py-1 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
-                            darkMode ? 'bg-gray-600 text-white border-gray-500' : 'bg-white text-black border-gray-300'
+                        <button
+                          onClick={() => toggleMachineLock(machine.id, 'washer')}
+                          className={`px-3 py-1 rounded font-semibold transition-colors flex items-center gap-1 ${
+                            machine.locked
+                              ? darkMode ? 'bg-red-700 hover:bg-red-600 text-white' : 'bg-red-500 hover:bg-red-600 text-white'
+                              : darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
                           }`}
                         >
-                          <option value="available">Available</option>
-                          <option value="maintenance">Maintenance</option>
-                        </select>
+                          {machine.locked ? (
+                            <>
+                              <Lock className="w-4 h-4" />
+                              Locked
+                            </>
+                          ) : (
+                            <>
+                              <Unlock className="w-4 h-4" />
+                              Unlocked
+                            </>
+                          )}
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -1242,16 +1242,26 @@ const KYWashSystem = () => {
                         darkMode ? 'bg-gray-700' : 'bg-gray-100'
                       }`}>
                         <span className="font-medium">Dryer {machine.id}</span>
-                        <select
-                          value={machine.status}
-                          onChange={(e) => changeMachineAvailability(machine.id, 'dryer', e.target.value as 'available' | 'maintenance')}
-                          className={`px-3 py-1 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
-                            darkMode ? 'bg-gray-600 text-white border-gray-500' : 'bg-white text-black border-gray-300'
+                        <button
+                          onClick={() => toggleMachineLock(machine.id, 'dryer')}
+                          className={`px-3 py-1 rounded font-semibold transition-colors flex items-center gap-1 ${
+                            machine.locked
+                              ? darkMode ? 'bg-red-700 hover:bg-red-600 text-white' : 'bg-red-500 hover:bg-red-600 text-white'
+                              : darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
                           }`}
                         >
-                          <option value="available">Available</option>
-                          <option value="maintenance">Maintenance</option>
-                        </select>
+                          {machine.locked ? (
+                            <>
+                              <Lock className="w-4 h-4" />
+                              Locked
+                            </>
+                          ) : (
+                            <>
+                              <Unlock className="w-4 h-4" />
+                              Unlocked
+                            </>
+                          )}
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -1443,7 +1453,18 @@ const KYWashSystem = () => {
                 }`}
               >
                 <TrendingUp className="w-4 h-4 inline mr-2" />
-                Stats
+                Washer Stats
+              </button>
+              <button
+                onClick={() => setCurrentView('dryer-stats')}
+                className={`px-4 py-2 rounded-lg font-medium transition ${
+                  currentView === 'dryer-stats'
+                    ? 'bg-blue-600 text-white'
+                    : darkMode ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' : 'bg-white text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                <TrendingUp className="w-4 h-4 inline mr-2" />
+                Dryer Stats
               </button>
               <button
                 onClick={() => {
@@ -1714,7 +1735,7 @@ const KYWashSystem = () => {
                         {machine.status === 'available' && !machine.locked && (
                           <>
                             <div className="space-y-2 mb-3">
-                              {modes.map((mode: Mode) => (
+                              {washerModes.map((mode: Mode) => (
                                 <button
                                   key={mode.name}
                                   onClick={(e) => {
@@ -1844,7 +1865,7 @@ const KYWashSystem = () => {
                         {machine.status === 'available' && !machine.locked && (
                           <>
                             <div className="space-y-2 mb-3">
-                              {modes.map((mode: Mode) => (
+                              {dryerModes.map((mode: Mode) => (
                                 <button
                                   key={mode.name}
                                   onClick={(e) => {
@@ -2165,6 +2186,203 @@ const KYWashSystem = () => {
                       </div>
                     </div>
                   ) : null;
+                })()}
+              </div>
+            )}
+
+            {/* Dryer Stats View */}
+            {currentView === 'dryer-stats' && user && (
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className={`rounded-lg shadow-md p-6 text-center transition-colors ${
+                    darkMode ? 'bg-gray-800' : 'bg-white'
+                  }`}>
+                    <Waves className={`w-12 h-12 mx-auto mb-3 ${darkMode ? 'text-blue-400' : 'text-blue-500'}`} />
+                    <p className={`text-sm mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Total Dry Cycles</p>
+                    <p className={`text-3xl font-bold ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+                      {usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.machineType === 'dryer').length}
+                    </p>
+                  </div>
+                  <div className={`rounded-lg shadow-md p-6 text-center transition-colors ${
+                    darkMode ? 'bg-gray-800' : 'bg-white'
+                  }`}>
+                    <Clock className={`w-12 h-12 mx-auto mb-3 ${darkMode ? 'text-green-400' : 'text-green-500'}`} />
+                    <p className={`text-sm mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Total Minutes</p>
+                    <p className={`text-3xl font-bold ${darkMode ? 'text-green-400' : 'text-green-600'}`}>
+                      {usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.machineType === 'dryer').reduce((sum, h) => sum + h.duration, 0)}
+                    </p>
+                  </div>
+                  <div className={`rounded-lg shadow-md p-6 text-center transition-colors ${
+                    darkMode ? 'bg-gray-800' : 'bg-white'
+                  }`}>
+                    <TrendingUp className={`w-12 h-12 mx-auto mb-3 ${darkMode ? 'text-purple-400' : 'text-purple-500'}`} />
+                    <p className={`text-sm mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Avg. Duration</p>
+                    <p className={`text-3xl font-bold ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}>
+                      {usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.machineType === 'dryer').length > 0 
+                        ? Math.round(usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.machineType === 'dryer').reduce((sum, h) => sum + h.duration, 0) / usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.machineType === 'dryer').length)
+                        : 0}m
+                    </p>
+                  </div>
+                </div>
+
+                {/* Drying Pattern Analysis */}
+                {(() => {
+                  const patternAnalysis = analyzeDryingPatterns();
+                  return (
+                    <div className={`rounded-lg shadow-md p-6 transition-colors ${
+                      darkMode ? 'bg-gray-800' : 'bg-white'
+                    }`}>
+                      <h3 className={`text-xl font-bold mb-4 flex items-center gap-2 ${
+                        darkMode ? 'text-white' : 'text-gray-800'
+                      }`}>
+                        <BarChart3 className="w-6 h-6" />
+                        Drying Pattern Analysis
+                      </h3>
+                      <p className={`text-sm mb-4 p-4 rounded-lg ${
+                        darkMode ? 'bg-blue-900 text-blue-200' : 'bg-blue-50 text-blue-900'
+                      }`}>
+                        {patternAnalysis.description}
+                      </p>
+                      {patternAnalysis.peakHours.length > 0 && (
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className={`p-4 rounded-lg ${
+                            darkMode ? 'bg-red-900' : 'bg-red-50'
+                          }`}>
+                            <p className={`text-sm font-semibold mb-2 ${
+                              darkMode ? 'text-red-300' : 'text-red-800'
+                            }`}>Peak Hours</p>
+                            <div className="space-y-1">
+                              {patternAnalysis.peakHours.map((hour) => (
+                                <p key={hour} className={`text-lg font-bold ${
+                                  darkMode ? 'text-red-400' : 'text-red-600'
+                                }`}>
+                                  {hour}:00
+                                </p>
+                              ))}
+                            </div>
+                          </div>
+                          <div className={`p-4 rounded-lg ${
+                            darkMode ? 'bg-green-900' : 'bg-green-50'
+                          }`}>
+                            <p className={`text-sm font-semibold mb-2 ${
+                              darkMode ? 'text-green-300' : 'text-green-800'
+                            }`}>Suggested Hours</p>
+                            <div className="space-y-1">
+                              {patternAnalysis.suggestedHours.map((hour) => (
+                                <p key={hour} className={`text-lg font-bold ${
+                                  darkMode ? 'text-green-400' : 'text-green-600'
+                                }`}>
+                                  {hour}:00
+                                </p>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Weekly Dryer Usage Stats */}
+                {(() => {
+                  // Compute stats specifically for dryers
+                  const now = new Date();
+                  const dayOfWeek = now.getDay();
+                  const startOfWeek = new Date(now);
+                  startOfWeek.setDate(now.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+                  startOfWeek.setHours(0, 0, 0, 0);
+
+                  const endOfWeek = new Date(startOfWeek);
+                  endOfWeek.setDate(startOfWeek.getDate() + 6);
+                  endOfWeek.setHours(23, 59, 59, 999);
+
+                  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+                  const dayStats: Record<string, number> = {};
+                  days.forEach(day => dayStats[day] = 0);
+
+                  usageHistory.forEach((record: UsageHistory) => {
+                    if (record.machineType === 'dryer') {
+                      const recordDate = new Date(record.timestamp);
+                      if (recordDate >= startOfWeek && recordDate <= endOfWeek) {
+                        const day = days[recordDate.getDay() === 0 ? 6 : recordDate.getDay() - 1];
+                        dayStats[day]++;
+                      }
+                    }
+                  });
+
+                  const totalUsage = Object.values(dayStats).reduce((a, b) => a + b, 0);
+                  const avgUsage = totalUsage > 0 ? Math.round(totalUsage / 7) : 0;
+                  const peakDay = Object.entries(dayStats).sort(([, a], [, b]) => b - a)[0]?.[0] || 'N/A';
+
+                  return (
+                    <div className={`rounded-lg shadow-md p-6 transition-colors ${
+                      darkMode ? 'bg-gray-800' : 'bg-white'
+                    }`}>
+                      <h3 className={`text-xl font-bold mb-4 flex items-center gap-2 ${
+                        darkMode ? 'text-white' : 'text-gray-800'
+                      }`}>
+                        <BarChart3 className="w-6 h-6" />
+                        Weekly Dryer Usage
+                      </h3>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                        <div className={`p-4 rounded-lg text-center ${
+                          darkMode ? 'bg-blue-900' : 'bg-blue-50'
+                        }`}>
+                          <p className={`text-sm font-semibold ${
+                            darkMode ? 'text-blue-300' : 'text-blue-800'
+                          }`}>Total Uses This Week</p>
+                          <p className={`text-3xl font-bold ${
+                            darkMode ? 'text-blue-400' : 'text-blue-600'
+                          }`}>{totalUsage}</p>
+                        </div>
+                        <div className={`p-4 rounded-lg text-center ${
+                          darkMode ? 'bg-purple-900' : 'bg-purple-50'
+                        }`}>
+                          <p className={`text-sm font-semibold ${
+                            darkMode ? 'text-purple-300' : 'text-purple-800'
+                          }`}>Peak Day</p>
+                          <p className={`text-2xl font-bold ${
+                            darkMode ? 'text-purple-400' : 'text-purple-600'
+                          }`}>{peakDay}</p>
+                        </div>
+                        <div className={`p-4 rounded-lg text-center ${
+                          darkMode ? 'bg-indigo-900' : 'bg-indigo-50'
+                        }`}>
+                          <p className={`text-sm font-semibold ${
+                            darkMode ? 'text-indigo-300' : 'text-indigo-800'
+                          }`}>Daily Average</p>
+                          <p className={`text-3xl font-bold ${
+                            darkMode ? 'text-indigo-400' : 'text-indigo-600'
+                          }`}>{avgUsage}</p>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        {days.map((day) => {
+                          const count = dayStats[day] || 0;
+                          const maxCount = Math.max(...Object.values(dayStats));
+                          const percentage = maxCount > 0 ? (count / maxCount) * 100 : 0;
+                          return (
+                            <div key={day} className="space-y-1">
+                              <div className="flex justify-between text-sm">
+                                <span className={darkMode ? 'text-gray-300' : 'text-gray-700'}>{day}</span>
+                                <span className={`font-semibold ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{count} uses</span>
+                              </div>
+                              <div className={`w-full h-6 rounded-lg overflow-hidden ${
+                                darkMode ? 'bg-gray-700' : 'bg-gray-200'
+                              }`}>
+                                <div
+                                  className={`h-full transition-all ${
+                                    darkMode ? 'bg-purple-600' : 'bg-purple-500'
+                                  }`}
+                                  style={{ width: `${percentage}%` }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
                 })()}
               </div>
             )}

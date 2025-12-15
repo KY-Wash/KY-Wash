@@ -111,8 +111,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             machine.userStudentId = data.studentId;
             machine.userPhone = data.phoneNumber;
             
-            // Calculate spending
-            const spending = data.mode === 'Normal' ? 5 : data.mode === 'Extra Wash' ? 6 : 0;
+            // Calculate spending (both washers and dryers charge same: Normal=5, Extra=6)
+            const spending = data.mode === 'Normal' ? 5 : data.mode.includes('Extra') ? 6 : 0;
             
             // Record in usage history immediately when machine starts
             const now = new Date();
