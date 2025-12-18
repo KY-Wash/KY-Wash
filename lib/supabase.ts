@@ -24,14 +24,14 @@ export const supabase = getSupabaseClient();
 // Type definitions for database tables
 export interface UsageRecord {
   id?: string;
-  student_id: string;
+  studentId: string;
   phone_number: string;
-  machine_type: 'washer' | 'dryer';
-  machine_id: number;
+  machineType: 'washer' | 'dryer';
+  machineId: number;
   mode: string;
   duration: number;
   spending: number;
-  status: 'In Progress' | 'Completed' | 'cancelled';
+  status?: 'In Progress' | 'Completed' | 'cancelled';
   date: string;
   timestamp: number;
   created_at?: string;
@@ -50,10 +50,10 @@ export const insertUsageRecord = async (record: UsageRecord) => {
     const { data, error } = await client
       .from('usage_history')
       .insert([{
-        student_id: record.student_id,
+        userStudentID: record.studentId,
         phone_number: record.phone_number,
-        machine_type: record.machine_type,
-        machine_id: record.machine_id,
+        type: record.machineType,
+        machine_id: record.machineId,
         mode: record.mode,
         duration: record.duration,
         spending: record.spending,

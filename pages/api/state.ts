@@ -98,9 +98,9 @@ async function syncUsageRecordToSupabase(record: any) {
         'apikey': supabaseAnonKey,
       },
       body: JSON.stringify({
-        student_id: record.studentId,
+        userStudentID: record.studentId,
         phone_number: record.phoneNumber || '',
-        machine_type: record.machineType,
+        type: record.machineType,
         machine_id: record.machineId,
         mode: record.mode,
         duration: record.duration,
@@ -132,7 +132,7 @@ async function updateSupabaseRecordStatus(studentId: string, machineType: string
 
     // Build query to find and update the record
     const response = await fetch(
-      `${supabaseUrl}/rest/v1/usage_history?student_id=eq.${studentId}&machine_type=eq.${machineType}&machine_id=eq.${machineId}&status=eq.In%20Progress`,
+      `${supabaseUrl}/rest/v1/usage_history?userStudentID=eq.${studentId}&type=eq.${machineType}&machine_id=eq.${machineId}&status=eq.In%20Progress`,
       {
         method: 'PATCH',
         headers: {
