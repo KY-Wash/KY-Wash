@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getAppState, updateAppState, loadPersistedState } from '@/lib/sharedState';
+import { supabase } from '@/lib/supabase';
 
 // Track machine start times for accurate timer calculation based on system clock
 const machineStartTimes: Map<string, number> = new Map();
@@ -51,6 +52,8 @@ function initializeGlobalTimer() {
             );
             if (historyRecord) {
               historyRecord.status = 'Completed';
+              // Sync completion status to Supabase
+              updateSupabaseRecordStatus(machine.userStudentId, machine.type, machine.id, 'Completed');
             }
           }
         }
@@ -75,6 +78,79 @@ function startServerTimer(machineId: string, machineType: string, initialDuratio
 function stopServerTimer(machineId: string, machineType: string) {
   const key = `${machineType}-${machineId}`;
   machineStartTimes.delete(key);
+}
+
+// Helper function to sync usage record to Supabase
+async function syncUsageRecordToSupabase(record: any) {
+  try {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    
+    if (!supabaseUrl || !supabaseAnonKey) {
+      console.log('Supabase not configured, skipping sync');
+      return;
+    }
+
+    const response = await fetch(`${supabaseUrl}/rest/v1/usage_history`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${supabaseAnonKey}`,
+        'apikey': supabaseAnonKey,
+      },
+      body: JSON.stringify({
+        student_id: record.studentId,
+        phone_number: record.phoneNumber || '',
+        machine_type: record.machineType,
+        machine_id: record.machineId,
+        mode: record.mode,
+        duration: record.duration,
+        spending: record.spending,
+        status: record.status,
+        date: record.date,
+        timestamp: record.timestamp,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error('Failed to sync to Supabase:', response.statusText);
+    }
+  } catch (error) {
+    console.error('Error syncing to Supabase:', error);
+    // Don't throw - we want the app to work even if Supabase is down
+  }
+}
+
+// Helper function to update usage record status in Supabase
+async function updateSupabaseRecordStatus(studentId: string, machineType: string, machineId: string | number, newStatus: string) {
+  try {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    
+    if (!supabaseUrl || !supabaseAnonKey) {
+      return;
+    }
+
+    // Build query to find and update the record
+    const response = await fetch(
+      `${supabaseUrl}/rest/v1/usage_history?student_id=eq.${studentId}&machine_type=eq.${machineType}&machine_id=eq.${machineId}&status=eq.In%20Progress`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${supabaseAnonKey}`,
+          'apikey': supabaseAnonKey,
+        },
+        body: JSON.stringify({ status: newStatus }),
+      }
+    );
+
+    if (!response.ok) {
+      console.error('Failed to update Supabase record:', response.statusText);
+    }
+  } catch (error) {
+    console.error('Error updating Supabase record:', error);
+  }
 }
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -127,7 +203,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             
             // Record in usage history immediately when machine starts
             const now = new Date();
-            state.usageHistory.push({
+            const usageRecord = {
               id: `${Date.now()}-${Math.random()}`,
               machineType: data.machineType,
               machineId: data.machineId,
@@ -135,10 +211,15 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
               duration: data.duration,
               date: now.toLocaleDateString(),
               studentId: data.studentId,
+              phoneNumber: data.phoneNumber,
               timestamp: now.getTime(),
               spending: spending,
-              status: 'In Progress'
-            });
+              status: 'In Progress' as const,
+            };
+            state.usageHistory.push(usageRecord);
+            
+            // Sync to Supabase
+            syncUsageRecordToSupabase(usageRecord);
             
             // Automatically remove user from both waitlists when they start a machine
             state.waitlists.washers = state.waitlists.washers.filter(
@@ -168,6 +249,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
                   h.machineType === data.machineType && 
                   h.machineId === data.machineId &&
                   h.status === 'In Progress') {
+                // Sync cancellation to Supabase
+                updateSupabaseRecordStatus(data.studentId, data.machineType, data.machineId, 'cancelled');
                 return {
                   ...h,
                   status: 'cancelled',
