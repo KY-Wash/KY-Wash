@@ -950,18 +950,63 @@ const KYWashSystem = () => {
     return { totalWashes, totalMinutes, mostUsedMode };
   };
 
+  // Get usage history for current month
+  const getCurrentMonthData = (): UsageHistory[] => {
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+    
+    return usageHistory.filter((record: UsageHistory) => {
+      const recordDate = new Date(record.date);
+      return recordDate.getMonth() === currentMonth && recordDate.getFullYear() === currentYear;
+    });
+  };
+
+  // Generate CSV from data
+  const generateCSV = (data: UsageHistory[]): string => {
+    if (data.length === 0) return '';
+    
+    const headers = ['Student ID', 'Type', 'Machine ID', 'Mode', 'Duration (min)', 'Spending (RM)', 'Date'];
+    const rows = data.map((record: UsageHistory) => [
+      record.studentId,
+      record.machineType,
+      record.machineId,
+      record.mode,
+      record.duration,
+      record.spending || 0,
+      record.date
+    ]);
+    
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+    ].join('\n');
+    
+    return csvContent;
+  };
+
+  // Download CSV file
+  const downloadCSV = (): void => {
+    const data = getCurrentMonthData();
+    const csv = generateCSV(data);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const now = new Date();
+    const fileName = `usage_history_${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, '0')}.csv`;
+    link.setAttribute('href', URL.createObjectURL(blob));
+    link.setAttribute('download', fileName);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const stats = getStats();
 
   return (
-    <div className={`min-h-screen transition-colors ${
-      darkMode 
-        ? 'bg-gray-900 text-white' 
-        : 'bg-gradient-to-br from-blue-50 to-indigo-100 text-black'
-    }`}>
+    <div className={`min-h-screen transition-colors ${darkMode ? 'bg-gray-900 text-white' : 'bg-gray-50 text-black'}`}>
       {/* Header */}
-      <header className={`shadow-md sticky top-0 z-40 transition-colors ${
-        darkMode ? 'bg-gray-800' : 'bg-white'
-      }`}>
+      <header className={`shadow-md transition-colors ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
         <div className="max-w-6xl mx-auto px-4 py-4 flex justify-between items-center">
           <div className="flex items-center gap-2">
             <Waves className="w-8 h-8 text-blue-600" />
@@ -1490,6 +1535,72 @@ const KYWashSystem = () => {
                     </div>
                   )}
                 </div>
+              </div>
+              
+              {/* Usage Data Table (Admin View) */}
+              <div className={`rounded-lg shadow-md p-6 transition-colors ${
+                darkMode ? 'bg-gray-800' : 'bg-white'
+              }`}>
+                <div className="flex justify-between items-center mb-4">
+                  <div>
+                    <h2 className={`text-2xl font-bold mb-2 ${darkMode ? 'text-white' : 'text-gray-800'}`}>
+                      Usage History
+                    </h2>
+                    <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      Current month: {new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                    </p>
+                  </div>
+                  <button
+                    onClick={downloadCSV}
+                    className={`px-4 py-2 rounded-lg font-semibold transition-colors flex items-center gap-2 ${
+                      darkMode
+                        ? 'bg-blue-700 hover:bg-blue-600 text-white'
+                        : 'bg-blue-600 hover:bg-blue-700 text-white'
+                    }`}
+                  >
+                    Download CSV
+                  </button>
+                </div>
+
+                {getCurrentMonthData().length === 0 ? (
+                  <p className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No usage data available for this month</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className={`w-full border-collapse ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                      <thead>
+                        <tr className={`border-b-2 ${darkMode ? 'border-gray-600 bg-gray-700' : 'border-gray-300 bg-gray-100'}`}>
+                          <th className="px-4 py-2 text-left font-semibold">Student ID</th>
+                          <th className="px-4 py-2 text-left font-semibold">Type</th>
+                          <th className="px-4 py-2 text-left font-semibold">Machine ID</th>
+                          <th className="px-4 py-2 text-left font-semibold">Mode</th>
+                          <th className="px-4 py-2 text-left font-semibold">Duration (min)</th>
+                          <th className="px-4 py-2 text-left font-semibold">Spending (RM)</th>
+                          <th className="px-4 py-2 text-left font-semibold">Date</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {getCurrentMonthData().map((record: UsageHistory, idx: number) => (
+                          <tr
+                            key={`${record.id}-${idx}`}
+                            className={`border-b transition-colors ${
+                              darkMode
+                                ? idx % 2 === 0 ? 'bg-gray-700' : 'bg-gray-800 hover:bg-gray-700'
+                                : idx % 2 === 0 ? 'bg-white' : 'bg-gray-50 hover:bg-gray-100'
+                            }`}
+                          >
+                            <td className="px-4 py-2">{record.studentId}</td>
+                            <td className="px-4 py-2 capitalize">{record.machineType}</td>
+                            <td className="px-4 py-2">{record.machineId}</td>
+                            <td className="px-4 py-2">{record.mode}</td>
+                            <td className="px-4 py-2">{record.duration}</td>
+                            <td className="px-4 py-2 font-semibold">{record.spending || 0}</td>
+                            <td className="px-4 py-2">{record.date}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
               
               {/* Back to Login Button */}
