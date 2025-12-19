@@ -107,6 +107,8 @@ const KYWashSystem = () => {
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const [expandedWasherWaitlist, setExpandedWasherWaitlist] = useState<boolean>(false);
   const [expandedDryerWaitlist, setExpandedDryerWaitlist] = useState<boolean>(false);
+  const [selectedFilterMonth, setSelectedFilterMonth] = useState<number>(new Date().getMonth());
+  const [selectedFilterYear, setSelectedFilterYear] = useState<number>(new Date().getFullYear());
 
   const washerModes: Mode[] = [
     { name: 'Normal', duration: 30 },
@@ -287,6 +289,37 @@ const KYWashSystem = () => {
         clearInterval(pollingIntervalRef.current);
       }
     };
+  }, []);
+
+  // Continuous local timer countdown for running machines
+  useEffect(() => {
+    const timerInterval = setInterval(() => {
+      setMachines((prevMachines: Machine[]) => {
+        return prevMachines.map((machine: Machine) => {
+          if (machine.status === 'running' && machine.timeLeft > 0) {
+            const newTimeLeft = machine.timeLeft - 1;
+            
+            // Check if machine just completed
+            if (newTimeLeft <= 0) {
+              // Emit completion event
+              if (socketRef.current?.emit) {
+                socketRef.current.emit('machine-complete', {
+                  machineId: String(machine.id),
+                  machineType: machine.type,
+                  studentId: machine.userStudentId,
+                });
+              }
+              return { ...machine, timeLeft: 0, status: 'pending-collection' };
+            }
+            
+            return { ...machine, timeLeft: newTimeLeft };
+          }
+          return machine;
+        });
+      });
+    }, 1000);
+
+    return () => clearInterval(timerInterval);
   }, []);
 
   // Persist usage history to localStorage whenever it changes
@@ -962,6 +995,14 @@ const KYWashSystem = () => {
     });
   };
 
+  // Get usage history for selected month/year (for admin filtering)
+  const getFilteredUsageHistory = (): UsageHistory[] => {
+    return usageHistory.filter((record: UsageHistory) => {
+      const recordDate = new Date(record.date);
+      return recordDate.getMonth() === selectedFilterMonth && recordDate.getFullYear() === selectedFilterYear;
+    });
+  };
+
   // Generate CSV from data
   const generateCSV = (data: UsageHistory[]): string => {
     if (data.length === 0) return '';
@@ -1542,29 +1583,86 @@ const KYWashSystem = () => {
             <div className={`rounded-lg shadow-md p-6 transition-colors ${
               darkMode ? 'bg-gray-800' : 'bg-white'
             }`}>
-              <div className="flex justify-between items-center mb-4">
+              <div className="flex justify-between items-center mb-4 flex-wrap gap-4">
                 <div>
                   <h2 className={`text-2xl font-bold mb-2 ${darkMode ? 'text-white' : 'text-gray-800'}`}>
                     Usage History
                   </h2>
                   <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    Current month: {new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                    Viewing: {new Date(selectedFilterYear, selectedFilterMonth).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
                   </p>
                 </div>
-                <button
-                  onClick={downloadCSV}
-                  className={`px-4 py-2 rounded-lg font-semibold transition-colors flex items-center gap-2 ${
-                    darkMode
-                      ? 'bg-blue-700 hover:bg-blue-600 text-white'
-                      : 'bg-blue-600 hover:bg-blue-700 text-white'
-                  }`}
-                >
-                  Download CSV
-                </button>
+                <div className="flex gap-3 items-end flex-wrap">
+                  <div>
+                    <label className={`block text-sm font-semibold mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      Month
+                    </label>
+                    <select
+                      value={selectedFilterMonth}
+                      onChange={(e) => setSelectedFilterMonth(parseInt(e.target.value))}
+                      className={`px-3 py-2 rounded-lg border transition-colors ${
+                        darkMode
+                          ? 'bg-gray-700 border-gray-600 text-white hover:bg-gray-600'
+                          : 'bg-white border-gray-300 text-gray-800 hover:bg-gray-50'
+                      }`}
+                    >
+                      {Array.from({ length: 12 }).map((_, idx) => (
+                        <option key={idx} value={idx}>
+                          {new Date(0, idx).toLocaleDateString('en-US', { month: 'long' })}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className={`block text-sm font-semibold mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      Year
+                    </label>
+                    <select
+                      value={selectedFilterYear}
+                      onChange={(e) => setSelectedFilterYear(parseInt(e.target.value))}
+                      className={`px-3 py-2 rounded-lg border transition-colors ${
+                        darkMode
+                          ? 'bg-gray-700 border-gray-600 text-white hover:bg-gray-600'
+                          : 'bg-white border-gray-300 text-gray-800 hover:bg-gray-50'
+                      }`}
+                    >
+                      {Array.from({ length: 5 }).map((_, idx) => {
+                        const year = new Date().getFullYear() - idx;
+                        return (
+                          <option key={year} value={year}>
+                            {year}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const data = getFilteredUsageHistory();
+                      const csv = generateCSV(data);
+                      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                      const link = document.createElement('a');
+                      const fileName = `usage_history_${selectedFilterYear}_${String(selectedFilterMonth + 1).padStart(2, '0')}.csv`;
+                      link.setAttribute('href', URL.createObjectURL(blob));
+                      link.setAttribute('download', fileName);
+                      link.style.visibility = 'hidden';
+                      document.body.appendChild(link);
+                      link.click();
+                      document.body.removeChild(link);
+                    }}
+                    className={`px-4 py-2 rounded-lg font-semibold transition-colors flex items-center gap-2 ${
+                      darkMode
+                        ? 'bg-blue-700 hover:bg-blue-600 text-white'
+                        : 'bg-blue-600 hover:bg-blue-700 text-white'
+                    }`}
+                  >
+                    Download CSV
+                  </button>
+                </div>
               </div>
 
-              {getCurrentMonthData().length === 0 ? (
-                <p className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No usage data available for this month</p>
+              {getFilteredUsageHistory().length === 0 ? (
+                <p className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No usage data available for the selected month</p>
               ) : (
                 <div className="overflow-x-auto">
                   <table className={`w-full border-collapse ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
@@ -1581,7 +1679,7 @@ const KYWashSystem = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {getCurrentMonthData().map((record: UsageHistory, idx: number) => {
+                      {getFilteredUsageHistory().map((record: UsageHistory, idx: number) => {
                         const recordTime = new Date(record.timestamp);
                         const timeString = recordTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
                         return (
@@ -1887,10 +1985,11 @@ const KYWashSystem = () => {
                           <div>
                             <p className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-gray-800'}`}>Washer {machine.id}</p>
                             <p className={`text-sm font-semibold capitalize ${
+                              machine.locked ? darkMode ? 'text-red-400' : 'text-red-600' :
                               machine.status === 'available' ? darkMode ? 'text-green-400' : 'text-green-600' :
                               machine.status === 'running' ? darkMode ? 'text-yellow-400' : 'text-yellow-600' : darkMode ? 'text-red-400' : 'text-red-600'
                             }`}>
-                              {machine.locked ? 'MAINTENANCE' : machine.status}
+                              {machine.locked ? 'NOT AVAILABLE' : machine.status}
                             </p>
                           </div>
                           {machine.locked && <Lock className={`w-5 h-5 ${darkMode ? 'text-red-400' : 'text-red-500'}`} />}
@@ -2017,10 +2116,11 @@ const KYWashSystem = () => {
                           <div>
                             <p className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-gray-800'}`}>Dryer {machine.id}</p>
                             <p className={`text-sm font-semibold capitalize ${
+                              machine.locked ? darkMode ? 'text-red-400' : 'text-red-600' :
                               machine.status === 'available' ? darkMode ? 'text-green-400' : 'text-green-600' :
                               machine.status === 'running' ? darkMode ? 'text-yellow-400' : 'text-yellow-600' : darkMode ? 'text-red-400' : 'text-red-600'
                             }`}>
-                              {machine.locked ? 'MAINTENANCE' : machine.status}
+                              {machine.locked ? 'NOT AVAILABLE' : machine.status}
                             </p>
                           </div>
                           {machine.locked && <Lock className={`w-5 h-5 ${darkMode ? 'text-red-400' : 'text-red-500'}`} />}
