@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Waves, Loader2, Clock, Users, AlertCircle, LogOut, Settings, ChevronDown, ChevronUp, Lock, Unlock, History, TrendingUp, X, Edit2, BarChart3, Trash2 } from 'lucide-react';
+import { insertUsageRecord, updateUsageRecordStatus } from '@/lib/supabase';
 
 interface User {
   studentId: string;
@@ -625,6 +626,37 @@ const KYWashSystem = () => {
         : machine
     ));
 
+    // Sync to Supabase
+    const newHistoryRecord: UsageHistory = {
+      id: `${Date.now()}-${Math.random()}`,
+      machineType: machineType,
+      machineId: machineId,
+      mode: mode.name,
+      duration: mode.duration,
+      date: new Date().toLocaleDateString(),
+      studentId: user.studentId,
+      timestamp: Date.now(),
+      spending: spending,
+      status: 'Completed'
+    };
+
+    // Add to local history
+    setUsageHistory((prev: UsageHistory[]) => [...prev, newHistoryRecord]);
+
+    // Sync to Supabase
+    insertUsageRecord({
+      studentId: user.studentId,
+      phone_number: user.phoneNumber,
+      machineType: machineType,
+      machineId: machineId,
+      mode: mode.name,
+      duration: mode.duration,
+      spending: spending,
+      status: 'Completed',
+      date: new Date().toLocaleDateString(),
+      timestamp: Date.now()
+    });
+
     showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} started! Phone: ${user.phoneNumber} | Charge: RM${spending}`);
   };
 
@@ -992,7 +1024,7 @@ const KYWashSystem = () => {
       .filter((h: UsageHistory) => 
         h.studentId === studentId && 
         h.machineType === 'washer' &&
-        h.status === 'Completed'
+        h.status !== 'cancelled'
       )
       .reduce((sum: number, h: UsageHistory) => sum + (h.spending || 0), 0);
   };
@@ -1002,7 +1034,7 @@ const KYWashSystem = () => {
       .filter((h: UsageHistory) => 
         h.studentId === studentId && 
         h.machineType === 'dryer' &&
-        h.status === 'Completed'
+        h.status !== 'cancelled'
       )
       .reduce((sum: number, h: UsageHistory) => sum + (h.spending || 0), 0);
   };
@@ -1010,10 +1042,11 @@ const KYWashSystem = () => {
   const getStats = (): { totalWashes: number; totalMinutes: number; mostUsedMode: Record<string, number> } => {
     if (!user) return { totalWashes: 0, totalMinutes: 0, mostUsedMode: {} };
 
-    const totalWashes = usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId).length;
-    const totalMinutes = usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId).reduce((sum: number, h: UsageHistory) => sum + h.duration, 0);
+    const userHistory = usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.status !== 'cancelled');
+    const totalWashes = userHistory.length;
+    const totalMinutes = userHistory.reduce((sum: number, h: UsageHistory) => sum + h.duration, 0);
     
-    const mostUsedMode = usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId).reduce((acc: Record<string, number>, h: UsageHistory) => {
+    const mostUsedMode = userHistory.reduce((acc: Record<string, number>, h: UsageHistory) => {
       acc[h.mode] = (acc[h.mode] || 0) + 1;
       return acc;
     }, {});
@@ -1055,18 +1088,24 @@ const KYWashSystem = () => {
   const generateCSV = (data: UsageHistory[]): string => {
     if (data.length === 0) return '';
     
-    const headers = ['Student ID', 'Type', 'Machine ID', 'Mode', 'Duration (min)', 'Spending (RM)', 'Status', 'Days', 'Date'];
-    const rows = data.map((record: UsageHistory) => [
-      record.studentId,
-      record.machineType,
-      record.machineId,
-      record.mode,
-      record.duration,
-      record.spending || 0,
-      record.status || 'Completed',
-      record.days || getDayName(record.timestamp),
-      record.date
-    ]);
+    const headers = ['Date', 'Day', 'Time', 'Student ID', 'Type', 'Machine ID', 'Mode', 'Duration (min)', 'Spending (RM)', 'Status'];
+    const rows = data.map((record: UsageHistory) => {
+      const recordTime = new Date(record.timestamp);
+      const timeString = recordTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const dayName = getDayName(record.timestamp);
+      return [
+        record.date,
+        dayName,
+        timeString,
+        record.studentId,
+        record.machineType,
+        record.machineId,
+        record.mode,
+        record.duration,
+        record.spending || 0,
+        record.status || 'Completed'
+      ];
+    });
     
     const csvContent = [
       headers.join(','),
@@ -1478,7 +1517,7 @@ const KYWashSystem = () => {
                   darkMode ? 'bg-blue-900' : 'bg-blue-100'
                 }`}>
                   <p className={`text-2xl font-bold ${darkMode ? 'text-blue-200' : 'text-blue-800'}`}>
-                    {usageHistory.filter(h => h.machineType === 'washer' && h.status === 'Completed').length}
+                    {usageHistory.filter(h => h.machineType === 'washer' && h.status !== 'cancelled').length}
                   </p>
                   <p className={`text-sm ${darkMode ? 'text-blue-300' : 'text-blue-600'}`}>Total Washer Cycles</p>
                 </div>
@@ -1488,7 +1527,7 @@ const KYWashSystem = () => {
                   darkMode ? 'bg-green-900' : 'bg-green-100'
                 }`}>
                   <p className={`text-2xl font-bold ${darkMode ? 'text-green-200' : 'text-green-800'}`}>
-                    {usageHistory.filter(h => h.machineType === 'dryer' && h.status === 'Completed').length}
+                    {usageHistory.filter(h => h.machineType === 'dryer' && h.status !== 'cancelled').length}
                   </p>
                   <p className={`text-sm ${darkMode ? 'text-green-300' : 'text-green-600'}`}>Total Dryer Cycles</p>
                 </div>
@@ -1512,7 +1551,7 @@ const KYWashSystem = () => {
                   <h3 className="text-lg font-semibold mb-3">Washer Usage</h3>
                   <div className="space-y-2">
                     {washerModes.map(mode => {
-                      const count = usageHistory.filter(h => h.machineType === 'washer' && h.mode === mode.name && h.status === 'Completed').length;
+                      const count = usageHistory.filter(h => h.machineType === 'washer' && h.mode === mode.name && h.status !== 'cancelled').length;
                       return (
                         <div key={mode.name} className="flex justify-between">
                           <span>{mode.name} ({mode.duration}min)</span>
@@ -1530,7 +1569,7 @@ const KYWashSystem = () => {
                   <h3 className="text-lg font-semibold mb-3">Dryer Usage</h3>
                   <div className="space-y-2">
                     {dryerModes.map(mode => {
-                      const count = usageHistory.filter(h => h.machineType === 'dryer' && h.mode === mode.name && h.status === 'Completed').length;
+                      const count = usageHistory.filter(h => h.machineType === 'dryer' && h.mode === mode.name && h.status !== 'cancelled').length;
                       return (
                         <div key={mode.name} className="flex justify-between">
                           <span>{mode.name} ({mode.duration}min)</span>
@@ -1551,15 +1590,25 @@ const KYWashSystem = () => {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {machines.map((machine: Machine) => (
                   <div key={`${machine.type}-${machine.id}`} className={`p-4 rounded-lg border-2 transition-colors ${
-                    machine.status === 'available' 
+                    machine.locked
+                      ? darkMode ? 'border-purple-600 bg-purple-900' : 'border-purple-500 bg-purple-50'
+                      : machine.status === 'available' 
                       ? darkMode ? 'border-green-600 bg-green-900' : 'border-green-500 bg-green-50'
                       : machine.status === 'running'
                       ? darkMode ? 'border-yellow-600 bg-yellow-900' : 'border-yellow-500 bg-yellow-50'
                       : darkMode ? 'border-red-600 bg-red-900' : 'border-red-500 bg-red-50'
                   }`}>
-                    <p className={`font-semibold capitalize ${darkMode ? 'text-white' : 'text-gray-800'}`}>{machine.type} {machine.id}</p>
-                    <p className={`text-sm capitalize ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{machine.status}</p>
-                    {machine.status === 'running' && (
+                    <div className="flex items-center justify-between mb-2">
+                      <p className={`font-semibold capitalize ${darkMode ? 'text-white' : 'text-gray-800'}`}>{machine.type} {machine.id}</p>
+                      {machine.locked && (
+                        <div className="flex items-center gap-1 px-2 py-1 rounded bg-purple-600 text-white text-xs font-semibold">
+                          <Lock className="w-3 h-3" />
+                          LOCKED
+                        </div>
+                      )}
+                    </div>
+                    <p className={`text-sm capitalize ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{machine.locked ? 'Locked by Admin' : machine.status}</p>
+                    {machine.status === 'running' && !machine.locked && (
                       <>
                         <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>User: {machine.userStudentId}</p>
                         <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Time Left: {formatTime(machine.timeLeft)}</p>
