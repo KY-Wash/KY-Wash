@@ -30,12 +30,13 @@ interface WaitlistEntry {
 
 interface UsageHistory {
   id: string;
-  machineType: string;
-  machineId: number;
+  type: 'washer' | 'dryer';
+  machine_id: number;
   mode: string;
   duration: number;
   date: string;
-  days?: string;
+  day: string;
+  time: string;
   studentId: string;
   timestamp: number;
   spending?: number;
@@ -44,8 +45,8 @@ interface UsageHistory {
 
 interface ReportedIssue {
   id: string;
-  machineType: string;
-  machineId: number;
+  type: 'washer' | 'dryer';
+  machine_id: number;
   reportedBy: string;
   phone: string;
   description: string;
@@ -174,8 +175,8 @@ const KYWashSystem = () => {
               setReportedIssues(
                 newState.reportedIssues.map((issue: any) => ({
                   id: issue.id,
-                  machineType: issue.machineType,
-                  machineId: parseInt(issue.machineId),
+                  type: issue.type || issue.machineType,
+                  machine_id: parseInt(issue.machine_id || issue.machineId),
                   reportedBy: issue.reportedBy,
                   phone: issue.phone,
                   description: issue.description,
@@ -191,11 +192,13 @@ const KYWashSystem = () => {
               setUsageHistory(
                 newState.usageHistory.map((record: any) => ({
                   id: record.id,
-                  machineType: record.machineType,
-                  machineId: parseInt(record.machineId),
+                  type: record.type || record.machineType,
+                  machine_id: parseInt(record.machine_id || record.machineId),
                   mode: record.mode,
                   duration: record.duration,
                   date: record.date,
+                  day: record.day || '',
+                  time: record.time || '',
                   studentId: record.studentId,
                   timestamp: record.timestamp,
                   spending: record.spending || 0,
@@ -250,8 +253,8 @@ const KYWashSystem = () => {
           setReportedIssues(
             newState.reportedIssues.map((issue: any) => ({
               id: issue.id,
-              machineType: issue.machineType,
-              machineId: parseInt(issue.machineId),
+              type: issue.type || issue.machineType,
+              machine_id: parseInt(issue.machine_id || issue.machineId),
               reportedBy: issue.reportedBy,
               phone: issue.phone,
               description: issue.description,
@@ -265,11 +268,13 @@ const KYWashSystem = () => {
           setUsageHistory(
             newState.usageHistory.map((record: any) => ({
               id: record.id,
-              machineType: record.machineType,
-              machineId: parseInt(record.machineId),
+              type: record.type || record.machineType,
+              machine_id: parseInt(record.machine_id || record.machineId),
               mode: record.mode,
               duration: record.duration,
               date: record.date,
+              day: record.day || '',
+              time: record.time || '',
               studentId: record.studentId,
               timestamp: record.timestamp,
               spending: record.spending || 0,
@@ -600,6 +605,12 @@ const KYWashSystem = () => {
     // Calculate spending based on mode
     const spending = getSpendingForMode(mode.name);
 
+    // Get current date and time
+    const now = new Date();
+    const dateStr = now.toLocaleDateString();
+    const timeStr = now.toLocaleTimeString();
+    const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][now.getDay()];
+
     // Emit to real-time API
     if (socketRef.current?.emit) {
       socketRef.current.emit('machine-start', {
@@ -629,11 +640,13 @@ const KYWashSystem = () => {
     // Sync to Supabase
     const newHistoryRecord: UsageHistory = {
       id: `${Date.now()}-${Math.random()}`,
-      machineType: machineType,
-      machineId: machineId,
+      type: machineType,
+      machine_id: machineId,
       mode: mode.name,
       duration: mode.duration,
-      date: new Date().toLocaleDateString(),
+      date: dateStr,
+      day: dayName,
+      time: timeStr,
       studentId: user.studentId,
       timestamp: Date.now(),
       spending: spending,
@@ -644,18 +657,22 @@ const KYWashSystem = () => {
     setUsageHistory((prev: UsageHistory[]) => [...prev, newHistoryRecord]);
 
     // Sync to Supabase
-    insertUsageRecord({
-      studentId: user.studentId,
-      phone_number: user.phoneNumber,
-      machineType: machineType,
-      machineId: machineId,
-      mode: mode.name,
-      duration: mode.duration,
-      spending: spending,
-      status: 'Completed',
-      date: new Date().toLocaleDateString(),
-      timestamp: Date.now()
-    });
+    insertUsageRecord(
+      {
+        studentid: user.studentId,
+        phone_number: user.phoneNumber,
+        type: machineType,
+        machine_id: machineId,
+        mode: mode.name,
+        duration: mode.duration,
+        spending: spending,
+        status: 'Completed',
+        date: dateStr,
+        day: dayName,
+        time: timeStr,
+        timestamp: Date.now()
+      }
+    );
 
     showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} started! Phone: ${user.phoneNumber} | Charge: RM${spending}`);
   };
@@ -775,8 +792,8 @@ const KYWashSystem = () => {
 
     const newIssue: ReportedIssue = {
       id: `${Date.now()}-${Math.random()}`,
-      machineType: selectedMachine.type,
-      machineId: selectedMachine.id,
+      type: selectedMachine.type,
+      machine_id: selectedMachine.id,
       reportedBy: user.studentId,
       phone: user.phoneNumber,
       description: issueDescription,
@@ -872,7 +889,7 @@ const KYWashSystem = () => {
       return { peakHours: [], suggestedHours: [], description: 'Not enough data to analyze patterns.' };
     }
 
-    const userHistory = usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.machineType === 'washer');
+    const userHistory = usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.type === 'washer');
     if (userHistory.length === 0) {
       return { peakHours: [], suggestedHours: [], description: 'Start using washers to see pattern analysis.' };
     }
@@ -909,7 +926,7 @@ const KYWashSystem = () => {
       return { peakHours: [], suggestedHours: [], description: 'Not enough data to analyze patterns.' };
     }
 
-    const userHistory = usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.machineType === 'dryer');
+    const userHistory = usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.type === 'dryer');
     if (userHistory.length === 0) {
       return { peakHours: [], suggestedHours: [], description: 'Start using dryers to see pattern analysis.' };
     }
@@ -973,25 +990,25 @@ const KYWashSystem = () => {
     return { dayStats, totalUsage, peakDay, avgUsage };
   };
 
-  const getCriticalIssues = (): Array<{ machineType: string; machineId: number; reportCount: number; description: string }> => {
+  const getCriticalIssues = (): Array<{ type: 'washer' | 'dryer'; machine_id: number; reportCount: number; description: string }> => {
     // Get issues that have more than 3 unresolved reports for the same machine
-    const issueCounts: Record<string, { count: number; description: string; machineType: string; machineId: number }> = {};
+    const issueCounts: Record<string, { count: number; description: string; type: 'washer' | 'dryer'; machine_id: number }> = {};
     reportedIssues.forEach((issue: ReportedIssue) => {
       if (!issue.resolved) {
-        const key = `${issue.machineType}-${issue.machineId}`;
+        const key = `${issue.type}-${issue.machine_id}`;
         if (!issueCounts[key]) {
-          issueCounts[key] = { count: 0, description: issue.description, machineType: issue.machineType, machineId: issue.machineId };
+          issueCounts[key] = { count: 0, description: issue.description, type: issue.type, machine_id: issue.machine_id };
         }
         issueCounts[key].count++;
       }
     });
 
-    const criticalIssues: Array<{ machineType: string; machineId: number; reportCount: number; description: string }> = [];
+    const criticalIssues: Array<{ type: 'washer' | 'dryer'; machine_id: number; reportCount: number; description: string }> = [];
     Object.entries(issueCounts).forEach(([, issueData]) => {
       if (issueData.count > 3) {
         criticalIssues.push({
-          machineType: issueData.machineType,
-          machineId: issueData.machineId,
+          type: issueData.type,
+          machine_id: issueData.machine_id,
           reportCount: issueData.count,
           description: issueData.description
         });
@@ -1023,7 +1040,7 @@ const KYWashSystem = () => {
     return usageHistory
       .filter((h: UsageHistory) => 
         h.studentId === studentId && 
-        h.machineType === 'washer' &&
+        h.type === 'washer' &&
         h.status !== 'cancelled'
       )
       .reduce((sum: number, h: UsageHistory) => sum + (h.spending || 0), 0);
@@ -1033,7 +1050,7 @@ const KYWashSystem = () => {
     return usageHistory
       .filter((h: UsageHistory) => 
         h.studentId === studentId && 
-        h.machineType === 'dryer' &&
+        h.type === 'dryer' &&
         h.status !== 'cancelled'
       )
       .reduce((sum: number, h: UsageHistory) => sum + (h.spending || 0), 0);
@@ -1098,8 +1115,8 @@ const KYWashSystem = () => {
         dayName,
         timeString,
         record.studentId,
-        record.machineType,
-        record.machineId,
+        record.type,
+        record.machine_id,
         record.mode,
         record.duration,
         record.spending || 0,
@@ -1478,7 +1495,7 @@ const KYWashSystem = () => {
                       <div className="flex justify-between items-start mb-2">
                         <div>
                           <p className="font-semibold">
-                            {issue.machineType.charAt(0).toUpperCase() + issue.machineType.slice(1)} {issue.machineId}
+                            {issue.type.charAt(0).toUpperCase() + issue.type.slice(1)} {issue.machine_id}
                           </p>
                           <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Reported by: {issue.reportedBy} ({issue.phone})</p>
                           <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{issue.date}</p>
@@ -1529,7 +1546,7 @@ const KYWashSystem = () => {
                   darkMode ? 'bg-blue-900' : 'bg-blue-100'
                 }`}>
                   <p className={`text-2xl font-bold ${darkMode ? 'text-blue-200' : 'text-blue-800'}`}>
-                    {usageHistory.filter(h => h.machineType === 'washer' && h.status !== 'cancelled').length}
+                    {usageHistory.filter(h => h.type === 'washer' && h.status !== 'cancelled').length}
                   </p>
                   <p className={`text-sm ${darkMode ? 'text-blue-300' : 'text-blue-600'}`}>Total Washer Cycles</p>
                 </div>
@@ -1539,7 +1556,7 @@ const KYWashSystem = () => {
                   darkMode ? 'bg-green-900' : 'bg-green-100'
                 }`}>
                   <p className={`text-2xl font-bold ${darkMode ? 'text-green-200' : 'text-green-800'}`}>
-                    {usageHistory.filter(h => h.machineType === 'dryer' && h.status !== 'cancelled').length}
+                    {usageHistory.filter(h => h.type === 'dryer' && h.status !== 'cancelled').length}
                   </p>
                   <p className={`text-sm ${darkMode ? 'text-green-300' : 'text-green-600'}`}>Total Dryer Cycles</p>
                 </div>
@@ -1563,7 +1580,7 @@ const KYWashSystem = () => {
                   <h3 className="text-lg font-semibold mb-3">Washer Usage</h3>
                   <div className="space-y-2">
                     {washerModes.map(mode => {
-                      const count = usageHistory.filter(h => h.machineType === 'washer' && h.mode === mode.name && h.status !== 'cancelled').length;
+                      const count = usageHistory.filter(h => h.type === 'washer' && h.mode === mode.name && h.status !== 'cancelled').length;
                       return (
                         <div key={mode.name} className="flex justify-between">
                           <span>{mode.name} ({mode.duration}min)</span>
@@ -1581,7 +1598,7 @@ const KYWashSystem = () => {
                   <h3 className="text-lg font-semibold mb-3">Dryer Usage</h3>
                   <div className="space-y-2">
                     {dryerModes.map(mode => {
-                      const count = usageHistory.filter(h => h.machineType === 'dryer' && h.mode === mode.name && h.status !== 'cancelled').length;
+                      const count = usageHistory.filter(h => h.type === 'dryer' && h.mode === mode.name && h.status !== 'cancelled').length;
                       return (
                         <div key={mode.name} className="flex justify-between">
                           <span>{mode.name} ({mode.duration}min)</span>
@@ -1832,8 +1849,8 @@ const KYWashSystem = () => {
                             <td className="px-4 py-2">{dayName}</td>
                             <td className="px-4 py-2">{timeString}</td>
                             <td className="px-4 py-2">{record.studentId}</td>
-                            <td className="px-4 py-2 capitalize">{record.machineType}</td>
-                            <td className="px-4 py-2">{record.machineId}</td>
+                            <td className="px-4 py-2 capitalize">{record.type}</td>
+                            <td className="px-4 py-2">{record.machine_id}</td>
                             <td className="px-4 py-2">{record.mode}</td>
                             <td className="px-4 py-2">{record.duration}</td>
                             <td className="px-4 py-2 font-semibold">{record.spending || 0}</td>
@@ -2428,7 +2445,7 @@ const KYWashSystem = () => {
                         <tbody>
                           {usageHistory.filter((h: UsageHistory) => h.studentId === user!.studentId).map((record: UsageHistory) => (
                             <tr key={record.id} className={`border-b ${darkMode ? 'border-gray-700 hover:bg-gray-700' : 'border-gray-200 hover:bg-gray-50'}`}>
-                              <td className={`px-4 py-2 font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{record.machineType} {record.machineId}</td>
+                              <td className={`px-4 py-2 font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{record.type} {record.machine_id}</td>
                               <td className={`px-4 py-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{record.mode}</td>
                               <td className={`px-4 py-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{record.duration} min</td>
                               <td className={`px-4 py-2 font-semibold ${
@@ -2561,7 +2578,7 @@ const KYWashSystem = () => {
 
                   // Count only WASHER usage by day of week
                   usageHistory.forEach((record: UsageHistory) => {
-                    if (record.machineType === 'washer') {
+                    if (record.type === 'washer') {
                       const recordDate = new Date(record.timestamp);
                       if (recordDate >= startOfWeek && recordDate <= endOfWeek) {
                         const day = days[recordDate.getDay() === 0 ? 6 : recordDate.getDay() - 1];
@@ -2666,7 +2683,7 @@ const KYWashSystem = () => {
                             <p className={`font-semibold ${
                               darkMode ? 'text-red-200' : 'text-red-900'
                             }`}>
-                              {issue.machineType.charAt(0).toUpperCase() + issue.machineType.slice(1)} #{issue.machineId} ({issue.reportCount} reports)
+                              {issue.type.charAt(0).toUpperCase() + issue.type.slice(1)} #{issue.machine_id} ({issue.reportCount} reports)
                             </p>
                             <p className={`text-sm mt-1 ${
                               darkMode ? 'text-red-300' : 'text-red-800'
@@ -2692,7 +2709,7 @@ const KYWashSystem = () => {
                     <Waves className={`w-12 h-12 mx-auto mb-3 ${darkMode ? 'text-blue-400' : 'text-blue-500'}`} />
                     <p className={`text-sm mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Total Dry Cycles</p>
                     <p className={`text-3xl font-bold ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
-                      {usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.machineType === 'dryer').length}
+                      {usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.type === 'dryer').length}
                     </p>
                   </div>
                   <div className={`rounded-lg shadow-md p-6 text-center transition-colors ${
@@ -2701,7 +2718,7 @@ const KYWashSystem = () => {
                     <Clock className={`w-12 h-12 mx-auto mb-3 ${darkMode ? 'text-green-400' : 'text-green-500'}`} />
                     <p className={`text-sm mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Total Minutes</p>
                     <p className={`text-3xl font-bold ${darkMode ? 'text-green-400' : 'text-green-600'}`}>
-                      {usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.machineType === 'dryer').reduce((sum, h) => sum + h.duration, 0)}
+                      {usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.type === 'dryer').reduce((sum, h) => sum + h.duration, 0)}
                     </p>
                   </div>
                   <div className={`rounded-lg shadow-md p-6 text-center transition-colors ${
@@ -2710,8 +2727,8 @@ const KYWashSystem = () => {
                     <TrendingUp className={`w-12 h-12 mx-auto mb-3 ${darkMode ? 'text-purple-400' : 'text-purple-500'}`} />
                     <p className={`text-sm mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Avg. Duration</p>
                     <p className={`text-3xl font-bold ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}>
-                      {usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.machineType === 'dryer').length > 0 
-                        ? Math.round(usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.machineType === 'dryer').reduce((sum, h) => sum + h.duration, 0) / usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.machineType === 'dryer').length)
+                      {usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.type === 'dryer').length > 0 
+                        ? Math.round(usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.type === 'dryer').reduce((sum, h) => sum + h.duration, 0) / usageHistory.filter((h: UsageHistory) => h.studentId === user.studentId && h.type === 'dryer').length)
                         : 0}m
                     </p>
                   </div>
@@ -2793,7 +2810,7 @@ const KYWashSystem = () => {
                   days.forEach(day => dayStats[day] = 0);
 
                   usageHistory.forEach((record: UsageHistory) => {
-                    if (record.machineType === 'dryer') {
+                    if (record.type === 'dryer') {
                       const recordDate = new Date(record.timestamp);
                       if (recordDate >= startOfWeek && recordDate <= endOfWeek) {
                         const day = days[recordDate.getDay() === 0 ? 6 : recordDate.getDay() - 1];
