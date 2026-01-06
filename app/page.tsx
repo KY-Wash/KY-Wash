@@ -250,20 +250,26 @@ const KYWashSystem = () => {
         if (response.ok) {
           const newState = await response.json();
 
-          // Update machines from API
-          setMachines(
-            newState.machines.map((m: any) => ({
-              id: parseInt(m.id),
-              type: m.type,
-              status: m.status,
-              timeLeft: m.timeLeft,
-              mode: m.mode || null,
-              locked: m.locked,
-              userStudentId: m.userStudentId || null,
-              userPhone: m.userPhone || null,
-              originalDuration: m.originalDuration || undefined,
-            }))
-          );
+          // Update machines from API - preserve local timer for running machines
+          setMachines((prevMachines) => {
+            return newState.machines.map((m: any) => {
+              // Find the previous machine state
+              const prevMachine = prevMachines.find((pm) => pm.id === parseInt(m.id) && pm.type === m.type);
+              
+              return {
+                id: parseInt(m.id),
+                type: m.type,
+                status: m.status,
+                // Preserve the local timer value if machine is running, use API value otherwise
+                timeLeft: prevMachine?.status === 'running' ? prevMachine.timeLeft : m.timeLeft,
+                mode: m.mode || null,
+                locked: m.locked,
+                userStudentId: m.userStudentId || null,
+                userPhone: m.userPhone || null,
+                originalDuration: m.originalDuration || undefined,
+              };
+            });
+          });
 
           // Update waitlists
           setWaitlists({
@@ -312,8 +318,9 @@ const KYWashSystem = () => {
     // Fetch initial state
     fetchState();
 
-    // Poll every 1000ms (1 per second) for accurate timer display
-    pollingIntervalRef.current = setInterval(fetchState, 1000);
+    // Poll every 5000ms (5 seconds) to avoid conflicts with local timer
+    // The local timer will handle the countdown for running machines
+    pollingIntervalRef.current = setInterval(fetchState, 5000);
 
     return () => {
       if (pollingIntervalRef.current) {
@@ -327,8 +334,9 @@ const KYWashSystem = () => {
     const timerInterval = setInterval(() => {
       setMachines((prevMachines: Machine[]) => {
         return prevMachines.map((machine: Machine) => {
+          // Only countdown machines that are actively running
           if (machine.status === 'running' && machine.timeLeft > 0) {
-            const newTimeLeft = machine.timeLeft - 1;
+            const newTimeLeft = Math.max(0, machine.timeLeft - 1);
             
             // Check if machine just completed
             if (newTimeLeft <= 0) {
@@ -345,6 +353,7 @@ const KYWashSystem = () => {
             
             return { ...machine, timeLeft: newTimeLeft };
           }
+          // Never change timeLeft for non-running machines
           return machine;
         });
       });
