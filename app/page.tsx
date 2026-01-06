@@ -131,6 +131,11 @@ const KYWashSystem = () => {
   const [showFeedback, setShowFeedback] = useState<boolean>(false);
   const [adminFeedbackTab, setAdminFeedbackTab] = useState<boolean>(false);
   const [lockedMachines, setLockedMachines] = useState<Map<string, boolean>>(new Map());
+  const [activeNotification, setActiveNotification] = useState<{ machineId: number; machineType: 'washer' | 'dryer' } | null>(null);
+  const [showNotificationModal, setShowNotificationModal] = useState<boolean>(false);
+  const notificationAudioRef = useRef<AudioContext | null>(null);
+  const notificationOscillatorRef = useRef<OscillatorNode | null>(null);
+  const notificationGainRef = useRef<GainNode | null>(null);
 
   const washerModes: Mode[] = [
     { name: 'Normal', duration: 30 },
@@ -456,15 +461,56 @@ const KYWashSystem = () => {
 
   // Apply locked machines from localStorage to machines state
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      // Check localStorage for any machines that are locked
+      const washerIds = [1, 2, 3, 4, 5, 6];
+      const dryerIds = [1, 2, 3, 4, 5, 6];
+      
+      const newLockedMap = new Map<string, boolean>();
+      
+      washerIds.forEach((id) => {
+        const lockedKey = `kyWash-locked-washer-${id}`;
+        const isLocked = localStorage.getItem(lockedKey);
+        if (isLocked) {
+          newLockedMap.set(`washer-${id}`, true);
+        }
+      });
+      
+      dryerIds.forEach((id) => {
+        const lockedKey = `kyWash-locked-dryer-${id}`;
+        const isLocked = localStorage.getItem(lockedKey);
+        if (isLocked) {
+          newLockedMap.set(`dryer-${id}`, true);
+        }
+      });
+      
+      if (newLockedMap.size > 0) {
+        setLockedMachines(newLockedMap);
+        
+        // Update machines state with locked status
+        setMachines((prevMachines: Machine[]) => 
+          prevMachines.map((machine: Machine) => {
+            const machineKey = `${machine.type}-${machine.id}`;
+            if (newLockedMap.has(machineKey)) {
+              return { ...machine, locked: true, status: 'maintenance' };
+            }
+            return machine;
+          })
+        );
+      }
+    }
+  }, []);
+
+  // Prevent locked machines from being unlocked when status changes
+  useEffect(() => {
     if (lockedMachines.size > 0) {
       setMachines((prevMachines: Machine[]) => 
         prevMachines.map((machine: Machine) => {
           const machineKey = `${machine.type}-${machine.id}`;
           const isLocked = lockedMachines.get(machineKey) || false;
-          if (isLocked && !machine.locked) {
+          // If machine is locked, force it to stay in maintenance status
+          if (isLocked && machine.status !== 'maintenance') {
             return { ...machine, locked: true, status: 'maintenance' };
-          } else if (!isLocked && machine.locked && machine.status === 'maintenance') {
-            return { ...machine, locked: false, status: 'available' };
           }
           return machine;
         })
@@ -487,7 +533,8 @@ const KYWashSystem = () => {
       if (machine.status === 'running' && machine.timeLeft === 300 && !reminderSentRef.current.has(machineKey)) {
         if (machine.userStudentId === user?.studentId) {
           reminderSentRef.current.add(machineKey);
-          showNotification(`⏰ Reminder: Your ${machine.type} ${machine.id} will be done in 5 minutes!`);
+          playNotificationSound();
+          showNotification(`⏰ REMINDER: Your ${machine.type} ${machine.id} will be done in 5 minutes!`);
         }
       }
       
@@ -497,7 +544,10 @@ const KYWashSystem = () => {
         if (machine.userStudentId === user?.studentId) {
           notifiedMachinesRef.current.add(machineKey);
           playNotificationSound();
-          showNotification(`${machine.type.charAt(0).toUpperCase() + machine.type.slice(1)} ${machine.id} is complete! Please collect your clothes.`);
+          startContinuousNotificationRing();
+          setActiveNotification({ machineId: machine.id, machineType: machine.type });
+          setShowNotificationModal(true);
+          showNotification(`🔔 ${machine.type.charAt(0).toUpperCase() + machine.type.slice(1)} ${machine.id} is complete! Please collect your clothes.`);
         }
       }
       
@@ -505,6 +555,9 @@ const KYWashSystem = () => {
       if (machine.status === 'available' && notifiedMachinesRef.current.has(machineKey)) {
         notifiedMachinesRef.current.delete(machineKey);
         reminderSentRef.current.delete(machineKey);
+        stopContinuousNotificationRing();
+        setActiveNotification(null);
+        setShowNotificationModal(false);
       }
     });
   }, [machines, user?.studentId]);
@@ -533,6 +586,57 @@ const KYWashSystem = () => {
       oscillator.stop(now + 2.0); // Extended stop time for all 5 beeps
     } catch (error) {
       console.error('Failed to play notification sound:', error);
+    }
+  };
+
+  const startContinuousNotificationRing = (): void => {
+    try {
+      if (!notificationAudioRef.current) {
+        notificationAudioRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      
+      const audioContext = notificationAudioRef.current;
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      
+      oscillator.frequency.value = 1000;
+      oscillator.type = 'sine';
+      
+      // Set initial gain to 0
+      gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+      
+      // Create a continuous ringing pattern
+      const now = audioContext.currentTime;
+      for (let i = 0; i < 100; i++) {
+        gainNode.gain.setValueAtTime(0.7, now + i * 0.4);
+        gainNode.gain.setValueAtTime(0, now + i * 0.4 + 0.2);
+      }
+      
+      oscillator.start(now);
+      oscillator.stop(now + 40); // Ring for 40 seconds max
+      
+      notificationOscillatorRef.current = oscillator;
+      notificationGainRef.current = gainNode;
+    } catch (error) {
+      console.error('Failed to start continuous notification ring:', error);
+    }
+  };
+
+  const stopContinuousNotificationRing = (): void => {
+    try {
+      if (notificationOscillatorRef.current) {
+        notificationOscillatorRef.current.stop();
+        notificationOscillatorRef.current = null;
+      }
+      if (notificationGainRef.current) {
+        notificationGainRef.current.disconnect();
+        notificationGainRef.current = null;
+      }
+    } catch (error) {
+      console.error('Failed to stop continuous notification ring:', error);
     }
   };
 
@@ -844,12 +948,32 @@ const KYWashSystem = () => {
       });
     }
 
+    // Store the lock state in localStorage to persist it
+    const lockedKey = `kyWash-locked-${machineType}-${machineId}`;
+    if (newLockedState) {
+      localStorage.setItem(lockedKey, JSON.stringify({ locked: true, timestamp: Date.now() }));
+    } else {
+      localStorage.removeItem(lockedKey);
+    }
+
     // Update local state immediately to show changes on admin page
     setMachines((prev: Machine[]) => prev.map((m: Machine) => 
       m.id === machineId && m.type === machineType
         ? { ...m, locked: newLockedState, status: newLockedState ? 'maintenance' : 'available' }
         : m
     ));
+    
+    // Update lockedMachines map for persistence
+    const machineKey = `${machineType}-${machineId}`;
+    setLockedMachines((prev) => {
+      const updated = new Map(prev);
+      if (newLockedState) {
+        updated.set(machineKey, true);
+      } else {
+        updated.delete(machineKey);
+      }
+      return updated;
+    });
     
     // Show notification
     showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} ${newLockedState ? 'locked' : 'unlocked'} successfully!`);
@@ -938,6 +1062,11 @@ const KYWashSystem = () => {
       });
     }
 
+    // Stop the continuous ring
+    stopContinuousNotificationRing();
+    setActiveNotification(null);
+    setShowNotificationModal(false);
+
     // Mark machine as available and notify next waitlist user
     setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
       machine.id === machineId && machine.type === machineType
@@ -945,7 +1074,7 @@ const KYWashSystem = () => {
         : machine
     ));
 
-    showNotification('Clothes collected! Machine is now available for others.');
+    showNotification('✅ Clothes collected! Machine is now available for others.');
     notifyWaitlist(machineType);
   };
 
@@ -955,7 +1084,12 @@ const KYWashSystem = () => {
     const machine = machines.find((m) => m.id === machineId && m.type === machineType);
     if (!machine) return;
 
-    showNotification(`You notified that you're coming to collect your clothes from ${machineType} ${machineId}.`);
+    // Stop the continuous ring when user notifies they're coming
+    stopContinuousNotificationRing();
+    setActiveNotification(null);
+    setShowNotificationModal(false);
+
+    showNotification(`✅ You notified that you're coming to collect your clothes from ${machineType} ${machineId}.`);
   };
 
   // Feedback functions
@@ -1089,6 +1223,73 @@ const KYWashSystem = () => {
       .sort();
 
     const description = `Your busiest drying times are around ${peakHours.map(h => `${h}:00`).join(', ')}. Consider drying between ${suggestedHours.map(h => `${h}:00`).join(' and ')} for shorter wait times.`;
+
+    return { peakHours, suggestedHours, description };
+  };
+
+  // Global analytics - based on all collected data
+  const analyzeGlobalWashingPatterns = (): { peakHours: number[]; suggestedHours: number[]; description: string } => {
+    const allWasherHistory = usageHistory.filter((h: UsageHistory) => h.type === 'washer');
+    if (allWasherHistory.length === 0) {
+      return { peakHours: [], suggestedHours: [], description: 'Not enough data to analyze system-wide washing patterns.' };
+    }
+
+    // Analyze when most people wash (by hour of day)
+    const hourDistribution: Record<number, number> = {};
+    allWasherHistory.forEach((record: UsageHistory) => {
+      const date = new Date(record.timestamp);
+      const hour = date.getHours();
+      hourDistribution[hour] = (hourDistribution[hour] || 0) + 1;
+    });
+
+    // Find peak hours (most usage)
+    const sortedHours = Object.entries(hourDistribution)
+      .sort(([, countA], [, countB]) => countB - countA)
+      .map(([hour]) => parseInt(hour));
+
+    const peakHours = sortedHours.slice(0, 3);
+    
+    // Suggest off-peak hours (least busy)
+    const allHours = Array.from({ length: 24 }, (_, i) => i);
+    const suggestedHours = allHours
+      .filter(h => !peakHours.includes(h))
+      .slice(0, 3)
+      .sort();
+
+    const description = `System-wide data shows peak washing times around ${peakHours.map(h => `${h}:00`).join(', ')}. The system is least busy between ${suggestedHours.map(h => `${h}:00`).join(' and ')}.`;
+
+    return { peakHours, suggestedHours, description };
+  };
+
+  const analyzeGlobalDryingPatterns = (): { peakHours: number[]; suggestedHours: number[]; description: string } => {
+    const allDryerHistory = usageHistory.filter((h: UsageHistory) => h.type === 'dryer');
+    if (allDryerHistory.length === 0) {
+      return { peakHours: [], suggestedHours: [], description: 'Not enough data to analyze system-wide drying patterns.' };
+    }
+
+    // Analyze when most people dry (by hour of day)
+    const hourDistribution: Record<number, number> = {};
+    allDryerHistory.forEach((record: UsageHistory) => {
+      const date = new Date(record.timestamp);
+      const hour = date.getHours();
+      hourDistribution[hour] = (hourDistribution[hour] || 0) + 1;
+    });
+
+    // Find peak hours (most usage)
+    const sortedHours = Object.entries(hourDistribution)
+      .sort(([, countA], [, countB]) => countB - countA)
+      .map(([hour]) => parseInt(hour));
+
+    const peakHours = sortedHours.slice(0, 3);
+    
+    // Suggest off-peak hours (least busy)
+    const allHours = Array.from({ length: 24 }, (_, i) => i);
+    const suggestedHours = allHours
+      .filter(h => !peakHours.includes(h))
+      .slice(0, 3)
+      .sort();
+
+    const description = `System-wide data shows peak drying times around ${peakHours.map(h => `${h}:00`).join(', ')}. The system is least busy between ${suggestedHours.map(h => `${h}:00`).join(' and ')}.`;
 
     return { peakHours, suggestedHours, description };
   };
@@ -2850,6 +3051,64 @@ const KYWashSystem = () => {
                   );
                 })()}
 
+                {/* Global System-Wide Washing Pattern Analysis */}
+                {(() => {
+                  const globalAnalysis = analyzeGlobalWashingPatterns();
+                  return (
+                    <div className={`rounded-lg shadow-md p-6 transition-colors border-l-4 ${
+                      darkMode ? 'bg-gray-800 border-blue-600' : 'bg-white border-blue-500'
+                    }`}>
+                      <h3 className={`text-xl font-bold mb-4 flex items-center gap-2 ${
+                        darkMode ? 'text-white' : 'text-gray-800'
+                      }`}>
+                        <BarChart3 className="w-6 h-6" />
+                        🌍 System-Wide Washing Trends
+                      </h3>
+                      <p className={`text-sm mb-4 p-4 rounded-lg ${
+                        darkMode ? 'bg-blue-900 text-blue-200' : 'bg-blue-50 text-blue-900'
+                      }`}>
+                        {globalAnalysis.description}
+                      </p>
+                      {globalAnalysis.peakHours.length > 0 && (
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className={`p-4 rounded-lg ${
+                            darkMode ? 'bg-red-900' : 'bg-red-50'
+                          }`}>
+                            <p className={`text-sm font-semibold mb-2 ${
+                              darkMode ? 'text-red-300' : 'text-red-800'
+                            }`}>Peak Hours (System)</p>
+                            <div className="space-y-1">
+                              {globalAnalysis.peakHours.map((hour) => (
+                                <p key={hour} className={`text-lg font-bold ${
+                                  darkMode ? 'text-red-400' : 'text-red-600'
+                                }`}>
+                                  {hour}:00
+                                </p>
+                              ))}
+                            </div>
+                          </div>
+                          <div className={`p-4 rounded-lg ${
+                            darkMode ? 'bg-green-900' : 'bg-green-50'
+                          }`}>
+                            <p className={`text-sm font-semibold mb-2 ${
+                              darkMode ? 'text-green-300' : 'text-green-800'
+                            }`}>Least Busy Hours</p>
+                            <div className="space-y-1">
+                              {globalAnalysis.suggestedHours.map((hour) => (
+                                <p key={hour} className={`text-lg font-bold ${
+                                  darkMode ? 'text-green-400' : 'text-green-600'
+                                }`}>
+                                  {hour}:00
+                                </p>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {/* Weekly Washer Usage Stats */}
                 {(() => {
                   const now = new Date();
@@ -3068,6 +3327,64 @@ const KYWashSystem = () => {
                             }`}>Suggested Hours</p>
                             <div className="space-y-1">
                               {patternAnalysis.suggestedHours.map((hour) => (
+                                <p key={hour} className={`text-lg font-bold ${
+                                  darkMode ? 'text-green-400' : 'text-green-600'
+                                }`}>
+                                  {hour}:00
+                                </p>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Global System-Wide Drying Pattern Analysis */}
+                {(() => {
+                  const globalAnalysis = analyzeGlobalDryingPatterns();
+                  return (
+                    <div className={`rounded-lg shadow-md p-6 transition-colors border-l-4 ${
+                      darkMode ? 'bg-gray-800 border-purple-600' : 'bg-white border-purple-500'
+                    }`}>
+                      <h3 className={`text-xl font-bold mb-4 flex items-center gap-2 ${
+                        darkMode ? 'text-white' : 'text-gray-800'
+                      }`}>
+                        <BarChart3 className="w-6 h-6" />
+                        🌍 System-Wide Drying Trends
+                      </h3>
+                      <p className={`text-sm mb-4 p-4 rounded-lg ${
+                        darkMode ? 'bg-purple-900 text-purple-200' : 'bg-purple-50 text-purple-900'
+                      }`}>
+                        {globalAnalysis.description}
+                      </p>
+                      {globalAnalysis.peakHours.length > 0 && (
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className={`p-4 rounded-lg ${
+                            darkMode ? 'bg-red-900' : 'bg-red-50'
+                          }`}>
+                            <p className={`text-sm font-semibold mb-2 ${
+                              darkMode ? 'text-red-300' : 'text-red-800'
+                            }`}>Peak Hours (System)</p>
+                            <div className="space-y-1">
+                              {globalAnalysis.peakHours.map((hour) => (
+                                <p key={hour} className={`text-lg font-bold ${
+                                  darkMode ? 'text-red-400' : 'text-red-600'
+                                }`}>
+                                  {hour}:00
+                                </p>
+                              ))}
+                            </div>
+                          </div>
+                          <div className={`p-4 rounded-lg ${
+                            darkMode ? 'bg-green-900' : 'bg-green-50'
+                          }`}>
+                            <p className={`text-sm font-semibold mb-2 ${
+                              darkMode ? 'text-green-300' : 'text-green-800'
+                            }`}>Least Busy Hours</p>
+                            <div className="space-y-1">
+                              {globalAnalysis.suggestedHours.map((hour) => (
                                 <p key={hour} className={`text-lg font-bold ${
                                   darkMode ? 'text-green-400' : 'text-green-600'
                                 }`}>
@@ -3347,6 +3664,53 @@ const KYWashSystem = () => {
                 }`}
               >
                 Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Completion Notification Modal - Rings continuously until user takes action */}
+      {showNotificationModal && activeNotification && (
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4 animate-pulse">
+          <div className={`rounded-lg shadow-2xl max-w-md w-full p-8 transition-colors text-center ${
+            darkMode ? 'bg-red-900' : 'bg-red-50'
+          }`}>
+            <h2 className={`text-3xl font-bold mb-4 ${
+              darkMode ? 'text-red-300' : 'text-red-900'
+            }`}>
+              🔔 MACHINE COMPLETE!
+            </h2>
+            <p className={`text-xl mb-6 ${
+              darkMode ? 'text-red-200' : 'text-red-800'
+            }`}>
+              {activeNotification.machineType.charAt(0).toUpperCase() + activeNotification.machineType.slice(1)} #{activeNotification.machineId}
+            </p>
+            <p className={`text-lg mb-8 ${
+              darkMode ? 'text-red-200' : 'text-red-800'
+            }`}>
+              Please come collect your clothes!
+            </p>
+            <div className="space-y-3">
+              <button
+                onClick={() => {
+                  notifyComingToCollect(activeNotification.machineId, activeNotification.machineType);
+                }}
+                className={`w-full px-6 py-4 rounded-lg font-bold text-lg transition-colors ${
+                  darkMode ? 'bg-green-700 text-white hover:bg-green-600' : 'bg-green-600 text-white hover:bg-green-700'
+                }`}
+              >
+                ✅ I am coming to collect my clothes
+              </button>
+              <button
+                onClick={() => {
+                  clothesCollected(activeNotification.machineId, activeNotification.machineType);
+                }}
+                className={`w-full px-6 py-4 rounded-lg font-bold text-lg transition-colors ${
+                  darkMode ? 'bg-blue-700 text-white hover:bg-blue-600' : 'bg-blue-600 text-white hover:bg-blue-700'
+                }`}
+              >
+                ✅ Clothes Collected
               </button>
             </div>
           </div>
