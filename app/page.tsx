@@ -88,7 +88,7 @@ interface Founder {
 
 const KYWashSystem = () => {
   const [user, setUser] = useState<User | null>(null);
-  const [currentView, setCurrentView] = useState<'main' | 'admin' | 'history' | 'stats' | 'dryer-stats' | 'feedback'>('main' as 'main' | 'admin' | 'history' | 'stats' | 'dryer-stats' | 'feedback');
+  const [currentView, setCurrentView] = useState<'main' | 'admin' | 'history' | 'stats' | 'dryer-stats' | 'feedback' | 'user-guide'>('main' as 'main' | 'admin' | 'history' | 'stats' | 'dryer-stats' | 'feedback' | 'user-guide');
   const [showLogin, setShowLogin] = useState<boolean>(true);
   const [isRegistering, setIsRegistering] = useState<boolean>(false);
   const [studentId, setStudentId] = useState<string>('');
@@ -141,6 +141,7 @@ const KYWashSystem = () => {
   const [showFeedback, setShowFeedback] = useState<boolean>(false);
   const [adminFeedbackTab, setAdminFeedbackTab] = useState<boolean>(false);
   const [showFoundersView, setShowFoundersView] = useState<boolean>(false);
+  const [showUserGuide, setShowUserGuide] = useState<boolean>(false);
   const [lockedMachines, setLockedMachines] = useState<Map<string, boolean>>(new Map());
   const [activeNotification, setActiveNotification] = useState<{ machineId: number; machineType: 'washer' | 'dryer' } | null>(null);
   const [showNotificationModal, setShowNotificationModal] = useState<boolean>(false);
@@ -1156,12 +1157,21 @@ const KYWashSystem = () => {
       return updated;
     });
 
-    // Clear the machine completely - mark as available
+    // Clear the machine completely - mark as available and UNLOCK it
     setMachines((prev: Machine[]) => prev.map((machine: Machine) =>
       machine.id === machineId && machine.type === machineType
-        ? { ...machine, status: 'available', timeLeft: 0, mode: null, userStudentId: null, userPhone: null }
+        ? { ...machine, status: 'available', timeLeft: 0, mode: null, userStudentId: null, userPhone: null, locked: false }
         : machine
     ));
+
+    // Remove from locked machines map
+    const lockedKey = `kyWash-locked-${machineType}-${machineId}`;
+    localStorage.removeItem(lockedKey);
+    setLockedMachines((prev) => {
+      const updated = new Map(prev);
+      updated.delete(machineKey);
+      return updated;
+    });
 
     showNotification('✅ Machine marked as empty! Now available for others.');
     notifyWaitlist(machineType);
@@ -2718,6 +2728,16 @@ const KYWashSystem = () => {
               >
                 👥 Founders
               </button>
+              <button
+                onClick={() => setShowUserGuide(!showUserGuide)}
+                className={`px-4 py-2 rounded-lg font-medium transition ${
+                  showUserGuide
+                    ? 'bg-blue-600 text-white'
+                    : darkMode ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' : 'bg-white text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                📖 User Guide
+              </button>
             </div>
 
             {/* Machines Grid */}
@@ -3309,54 +3329,101 @@ const KYWashSystem = () => {
 
             {/* Founders View */}
             {showFoundersView && user && (
-              <div className="space-y-6">
-                <div className={`rounded-lg shadow-md p-6 transition-colors ${
-                  darkMode ? 'bg-gray-800' : 'bg-white'
-                }`}>
-                  <h2 className={`text-3xl font-bold mb-4 flex items-center gap-2 ${
-                    darkMode ? 'text-white' : 'text-gray-800'
-                  }`}>
-                    👥 Meet the Founders
-                  </h2>
-                  <p className={`mb-6 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
-                    Get to know the talented founders behind KY Wash who are dedicated to improving our laundry services for everyone.
-                  </p>
-                  
-                  {founders.length === 0 ? (
-                    <p className={`text-center py-8 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                      No founders have been added yet.
-                    </p>
-                  ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      {founders.map((founder: Founder) => (
-                        <div
-                          key={founder.id}
-                          className={`rounded-lg overflow-hidden shadow-lg transition-transform hover:shadow-xl hover:scale-105 ${
-                            darkMode ? 'bg-gray-700' : 'bg-gray-50'
-                          }`}
-                        >
-                          {founder.profileImage && (
-                            <img
-                              src={founder.profileImage}
-                              alt={founder.name}
-                              className="w-full h-56 object-cover"
-                            />
-                          )}
-                          <div className="p-5">
-                            <p className={`text-xl font-bold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                              {founder.name}
-                            </p>
-                            <p className={`text-sm font-bold mb-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
-                              📚 <span className="font-bold">{founder.scholarship}</span>
-                            </p>
-                            <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                              🎓 {founder.course}
-                            </p>
-                          </div>
-                        </div>
-                      ))}
+              <div className={`rounded-lg shadow-md p-6 transition-colors ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+                <h2 className={`text-2xl font-bold mb-6 ${darkMode ? 'text-white' : 'text-gray-800'}`}>Meet Our Founders</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {[
+                    {
+                      name: "Justin Low Chun Xian",
+                      scholarship: "Yayasan UEM", 
+                      course: "Data Science",
+                      image: "/founderjustin.jpg"
+                    }
+                  ].map((founder, index) => (
+                    <div
+                      key={index}
+                      className={`rounded-lg p-6 text-center transition-colors overflow-hidden shadow-lg ${darkMode ? 'bg-gray-700' : 'bg-gray-50'}`}
+                    >
+                      {founder.image && (
+                        <img
+                          src={founder.image}
+                          alt={founder.name}
+                          className="w-24 h-24 rounded-full mx-auto mb-4 object-cover border-4 border-blue-500"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96' viewBox='0 0 96 96'%3E%3Crect fill='%23ccc' width='96' height='96'/%3E%3Ctext x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='14' fill='%23999'%3EImage Not Found%3C/text%3E%3C/svg%3E";
+                          }}
+                        />
+                      )}
+                      <h3 className={`text-xl font-bold mb-2 ${darkMode ? 'text-white' : 'text-gray-800'}`}>{founder.name}</h3>
+                      <p className={`text-blue-500 font-semibold mb-2`}>{founder.scholarship} Holder</p>
+                      <p className={`${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{founder.course}</p>
                     </div>
-                  )}
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* User Guide View */}
+            {showUserGuide && user && (
+              <div className={`rounded-lg shadow-md p-6 transition-colors ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+                <div className="max-w-4xl">
+                  <h2 className={`text-3xl font-bold mb-6 ${darkMode ? 'text-white' : 'text-gray-800'}`}>KY Wash – User Guide</h2>
+                  <p className={`mb-6 text-lg ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>First time using KY Wash? Follow the steps below to get started!</p>
+                  
+                  <div className="space-y-6">
+                    {/* Section 1 */}
+                    <div className={`p-4 rounded-lg border-l-4 ${darkMode ? 'bg-gray-700 border-blue-500' : 'bg-blue-50 border-blue-500'}`}>
+                      <h3 className={`text-2xl font-bold mb-3 ${darkMode ? 'text-blue-300' : 'text-blue-800'}`}>1. Starting a Washer or Dryer</h3>
+                      <ul className={`space-y-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                        <li>✓ Select the Start button on the washer or dryer you want to use.</li>
+                        <li>✓ Other users will be able to see that the machine is running.</li>
+                        <li><strong>⚠️ Please only press Start if you are actually using the machine.</strong></li>
+                      </ul>
+                    </div>
+
+                    {/* Section 2 */}
+                    <div className={`p-4 rounded-lg border-l-4 ${darkMode ? 'bg-gray-700 border-green-500' : 'bg-green-50 border-green-500'}`}>
+                      <h3 className={`text-2xl font-bold mb-3 ${darkMode ? 'text-green-300' : 'text-green-800'}`}>2. Joining the Waitlist</h3>
+                      <p className={`mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>If all machines are in use, you may choose to Join the Waitlist.</p>
+                      <p className={`mb-3 font-semibold ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>The waitlist allows users to:</p>
+                      <ul className={`space-y-2 mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                        <li>• Indicate interest in using a washer or dryer</li>
+                        <li>• See how many others are also waiting</li>
+                      </ul>
+                      <div className={`p-3 rounded ${darkMode ? 'bg-gray-600' : 'bg-gray-200'}`}>
+                        <p className={`text-sm font-semibold ${darkMode ? 'text-yellow-300' : 'text-yellow-800'}`}>ℹ️ Important:</p>
+                        <ul className={`text-sm space-y-1 mt-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                          <li>• The waitlist is not a queue</li>
+                          <li>• It does not reserve a machine or guarantee turn order</li>
+                          <li>• Machines are available on a first-come, first-served basis in real life</li>
+                        </ul>
+                      </div>
+                    </div>
+
+                    {/* Section 3 */}
+                    <div className={`p-4 rounded-lg border-l-4 ${darkMode ? 'bg-gray-700 border-orange-500' : 'bg-orange-50 border-orange-500'}`}>
+                      <h3 className={`text-2xl font-bold mb-3 ${darkMode ? 'text-orange-300' : 'text-orange-800'}`}>3. Collecting Your Clothes</h3>
+                      <p className={`mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Once your wash or dry cycle is finished:</p>
+                      <ul className={`space-y-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                        <li>✓ Remove your laundry promptly.</li>
+                        <li>✓ Select "Clothes Collected" on the webapp.</li>
+                        <li>✓ This updates the machine status for other users.</li>
+                      </ul>
+                    </div>
+
+                    {/* Section 4 */}
+                    <div className={`p-4 rounded-lg border-l-4 ${darkMode ? 'bg-gray-700 border-purple-500' : 'bg-purple-50 border-purple-500'}`}>
+                      <h3 className={`text-2xl font-bold mb-3 ${darkMode ? 'text-purple-300' : 'text-purple-800'}`}>4. Marking a Machine as Empty</h3>
+                      <p className={`mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>If you see a washer or dryer that is empty and ready for use:</p>
+                      <ul className={`space-y-2 mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                        <li>✓ Select "Machine is Ready".</li>
+                        <li>✓ This updates the machine status so others know it is available.</li>
+                      </ul>
+                      <div className={`p-3 rounded ${darkMode ? 'bg-gray-600' : 'bg-gray-200'}`}>
+                        <p className={`text-sm font-semibold ${darkMode ? 'text-blue-300' : 'text-blue-800'}`}>🤝 This feature relies on community cooperation — please update accurately.</p>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
