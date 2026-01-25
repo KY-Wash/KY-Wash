@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120">
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3B82F6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1E40AF;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <!-- Background circle -->
+  <circle cx="60" cy="60" r="60" fill="url(#bgGradient)"/>
+  <!-- Head -->
+  <circle cx="60" cy="40" r="18" fill="#ffffff"/>
+  <!-- Body -->
+  <path d="M45 58 Q45 65 50 72 L70 72 Q75 65 75 58 Z" fill="#ffffff"/>
+  <!-- Arms -->
+  <rect x="30" y="62" width="15" height="8" rx="4" fill="#ffffff"/>
+  <rect x="75" y="62" width="15" height="8" rx="4" fill="#ffffff"/>
+  <!-- Smile -->
+  <path d="M52 45 Q60 50 68 45" stroke="#3B82F6" stroke-width="2" fill="none" stroke-linecap="round"/>
+  <!-- Eyes -->
+  <circle cx="54" cy="38" r="2" fill="#3B82F6"/>
+  <circle cx="66" cy="38" r="2" fill="#3B82F6"/>
+</svg>
