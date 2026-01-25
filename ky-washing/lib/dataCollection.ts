@@ -1,5 +1,14 @@
 // User Data Collection and Analytics Module
 // Collects detailed information about user behavior, machine usage, and timing
+// Syncs with Supabase for persistent storage
+
+'use client';
+
+import { machineCyclesService } from './services/machineCycles';
+import { analyticsService } from './services/analytics';
+import { userSessionsService } from './services/userSessions';
+import { notificationsService } from './services/notifications';
+import { createClient } from './supabase/client';
 
 export interface UsageHistory {
   studentId: string;
@@ -25,6 +34,7 @@ export interface MachineUsageData extends UsageHistory {
   queueWaitTime?: number;
   notificationTime?: number;
   collectionTime?: number;
+  cycleId?: string;
 }
 
 export interface AnalyticsMetrics {
@@ -42,6 +52,8 @@ class DataCollectionService {
   private userBehaviors: Map<string, UserBehavior> = new Map();
   private machineUsageData: MachineUsageData[] = [];
   private sessionId: string;
+  private supabase = createClient();
+  private userId?: string;
 
   constructor() {
     this.sessionId = this.generateSessionId();
@@ -52,8 +64,15 @@ class DataCollectionService {
     return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
 
-  // Record user login
-  recordUserLogin(studentId: string, phoneNumber: string): void {
+  // Set user ID for tracking
+  setUserId(userId: string) {
+    this.userId = userId;
+  }
+
+  // Record user login - Syncs to Supabase
+  async recordUserLogin(studentId: string, phoneNumber: string, userId?: string): Promise<void> {
+    if (userId) this.userId = userId;
+
     const existing = this.userBehaviors.get(studentId) || {
       studentId,
       phoneNumber,
@@ -68,10 +87,30 @@ class DataCollectionService {
 
     this.userBehaviors.set(studentId, updatedBehavior);
     this.saveToStorage();
+
+    // Sync to Supabase
+    if (userId) {
+      await userSessionsService.startSession({
+        user_id: userId,
+        session_id: this.sessionId,
+        user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+        device_type: this.getDeviceType(),
+      });
+    }
+
+    // Track analytics event
+    await analyticsService.trackEvent({
+      user_id: userId,
+      event_type: 'user_login',
+      event_name: 'login',
+      category: 'Auth',
+      action: 'login',
+      session_id: this.sessionId,
+    });
   }
 
-  // Record user logout
-  recordUserLogout(studentId: string): void {
+  // Record user logout - Syncs to Supabase
+  async recordUserLogout(studentId: string): Promise<void> {
     const behavior = this.userBehaviors.get(studentId);
     if (behavior) {
       const updatedBehavior: UserBehavior = {
@@ -83,16 +122,106 @@ class DataCollectionService {
       this.userBehaviors.set(studentId, updatedBehavior);
       this.saveToStorage();
     }
+
+    // Sync to Supabase
+    await userSessionsService.endSession(this.sessionId);
+
+    // Track analytics event
+    await analyticsService.trackEvent({
+      user_id: this.userId,
+      event_type: 'user_logout',
+      event_name: 'logout',
+      category: 'Auth',
+      action: 'logout',
+      session_id: this.sessionId,
+    });
   }
 
-  // Record machine usage
-  recordMachineUsage(usage: UsageHistory & { queueWaitTime?: number; notificationTime?: number }): void {
+  // Record machine usage - Syncs to Supabase
+  async recordMachineUsage(usage: UsageHistory & { queueWaitTime?: number; notificationTime?: number; userId?: string }): Promise<void> {
     const machineData: MachineUsageData = {
       ...usage,
       completedAt: Date.now(),
     };
     this.machineUsageData.push(machineData);
     this.saveToStorage();
+
+    // Sync to Supabase - Create machine cycle
+    const userId = usage.userId || this.userId;
+    if (userId) {
+      const result = await machineCyclesService.startCycle({
+        machine_id: usage.machineId,
+        user_id: userId,
+        machine_name: `Machine ${usage.machineId}`,
+        machine_type: usage.machineType,
+        cycle_mode: usage.cycleMode,
+        duration_minutes: Math.ceil(usage.duration / 60),
+      });
+
+      if (result.success && result.data?.id) {
+        machineData.cycleId = result.data.id;
+      }
+
+      // Track analytics event
+      await analyticsService.trackMachineEvent(
+        'start',
+        usage.machineId,
+        userId,
+        {
+          cycleMode: usage.cycleMode,
+          duration: usage.duration,
+          queueWaitTime: usage.queueWaitTime,
+        }
+      );
+    }
+  }
+
+  // Complete a machine cycle - Syncs to Supabase
+  async completeMachineUsage(cycleId: string, cost?: number): Promise<void> {
+    const machineData = this.machineUsageData.find(m => m.cycleId === cycleId);
+    if (machineData) {
+      machineData.completedAt = Date.now();
+      this.saveToStorage();
+
+      // Sync to Supabase
+      await machineCyclesService.completeCycle(cycleId, {
+        cost: cost,
+      });
+
+      // Notify user
+      if (this.userId) {
+        await notificationsService.createNotification({
+          user_id: this.userId,
+          notification_type: 'cycle_complete',
+          title: 'Cycle Complete',
+          message: 'Your laundry cycle has completed. Please collect your clothes.',
+          priority: 'high',
+        });
+      }
+    }
+  }
+
+  // Mark clothes as collected - Syncs to Supabase
+  async markCycleAsCollected(cycleId: string): Promise<void> {
+    const machineData = this.machineUsageData.find(m => m.cycleId === cycleId);
+    if (machineData) {
+      machineData.collectionTime = Date.now();
+      this.saveToStorage();
+
+      // Sync to Supabase
+      await machineCyclesService.markAsCollected(cycleId);
+
+      // Track analytics event
+      if (this.userId) {
+        await analyticsService.trackEvent({
+          user_id: this.userId,
+          event_type: 'clothes_collected',
+          event_name: 'clothes_collected',
+          category: 'Machine',
+          action: 'collection',
+        });
+      }
+    }
   }
 
   // Get user behavior
@@ -108,6 +237,15 @@ class DataCollectionService {
   // Get machine usage data
   getMachineUsageData(): MachineUsageData[] {
     return this.machineUsageData;
+  }
+
+  // Helper to get device type
+  private getDeviceType(): string {
+    if (typeof navigator === 'undefined') return 'unknown';
+    
+    if (/mobile|android|iphone/i.test(navigator.userAgent)) return 'mobile';
+    if (/tablet|ipad/i.test(navigator.userAgent)) return 'tablet';
+    return 'desktop';
   }
 
   // Calculate analytics metrics
@@ -251,30 +389,43 @@ export const dataCollectionService = new DataCollectionService();
 
 // Export React hook for using in components
 export const useDataCollection = () => {
+  const service = dataCollectionService;
+
   return {
-    trackEvent: (eventName: string, data?: any) => {
-      dataCollectionService.recordMachineUsage({
+    setUserId: (userId: string) => {
+      service.setUserId(userId);
+    },
+    trackEvent: async (eventName: string, data?: any) => {
+      await service.recordMachineUsage({
         studentId: data?.userId || 'anonymous',
         machineId: data?.machineId || 0,
         machineType: data?.machineType || 'washer',
         startTime: Date.now(),
         duration: data?.duration || 0,
         cycleMode: eventName,
+        userId: data?.userId,
+        queueWaitTime: data?.queueWaitTime,
       });
+    },
+    completeCycle: async (cycleId: string, cost?: number) => {
+      await service.completeMachineUsage(cycleId, cost);
+    },
+    markAsCollected: async (cycleId: string) => {
+      await service.markCycleAsCollected(cycleId);
     },
     getAnalytics: () => {
       return {
-        events: dataCollectionService.calculateMetrics(),
-        totalEvents: 0,
+        events: service.calculateMetrics(),
+        totalEvents: service.getMachineUsageData().length,
         eventsByType: {},
-        recentEvents: [],
+        recentEvents: service.getMachineUsageData().slice(-10),
       };
     },
-    recordLogin: (studentId: string, phoneNumber: string) => {
-      dataCollectionService.recordUserLogin(studentId, phoneNumber);
+    recordLogin: async (studentId: string, phoneNumber: string, userId?: string) => {
+      await service.recordUserLogin(studentId, phoneNumber, userId);
     },
-    recordLogout: (studentId: string) => {
-      dataCollectionService.recordUserLogout(studentId);
+    recordLogout: async (studentId: string) => {
+      await service.recordUserLogout(studentId);
     },
   };
 };

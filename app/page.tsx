@@ -75,6 +75,7 @@ interface Feedback {
   isDone: boolean;
   reportCount: number;
   warnings: number;
+  rating?: number;
 }
 
 interface Founder {
@@ -136,8 +137,10 @@ const KYWashSystem = () => {
   const [selectedFilterDayOfWeek, setSelectedFilterDayOfWeek] = useState<number>(-1); // -1 means all days
   const [feedback, setFeedback] = useState<Feedback[]>([]);
   const [feedbackMessage, setFeedbackMessage] = useState<string>('');
+  const [feedbackRating, setFeedbackRating] = useState<number>(0);
   const [showFeedback, setShowFeedback] = useState<boolean>(false);
   const [adminFeedbackTab, setAdminFeedbackTab] = useState<boolean>(false);
+  const [showFoundersView, setShowFoundersView] = useState<boolean>(false);
   const [lockedMachines, setLockedMachines] = useState<Map<string, boolean>>(new Map());
   const [activeNotification, setActiveNotification] = useState<{ machineId: number; machineType: 'washer' | 'dryer' } | null>(null);
   const [showNotificationModal, setShowNotificationModal] = useState<boolean>(false);
@@ -408,6 +411,13 @@ const KYWashSystem = () => {
     }
   }, [feedback]);
 
+  // Persist founders to localStorage whenever they change
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('kyWashFounders', JSON.stringify(founders));
+    }
+  }, [founders]);
+
   // Persist locked machines to localStorage whenever they change
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -454,6 +464,17 @@ const KYWashSystem = () => {
           setFeedback(parsedFeedback);
         } catch (error) {
           console.error('Failed to load feedback from localStorage:', error);
+        }
+      }
+
+      // Load founders from localStorage if available
+      const savedFounders = localStorage.getItem('kyWashFounders');
+      if (savedFounders) {
+        try {
+          const parsedFounders = JSON.parse(savedFounders);
+          setFounders(parsedFounders);
+        } catch (error) {
+          console.error('Failed to load founders from localStorage:', error);
         }
       }
 
@@ -1182,6 +1203,11 @@ const KYWashSystem = () => {
       return;
     }
 
+    if (feedbackRating === 0) {
+      setError('Please select a rating before submitting');
+      return;
+    }
+
     const newFeedback: Feedback = {
       id: `${Date.now()}-${Math.random()}`,
       studentId: user.studentId,
@@ -1192,10 +1218,13 @@ const KYWashSystem = () => {
       isDone: false,
       reportCount: 0,
       warnings: 0,
+      rating: feedbackRating,
     };
 
     setFeedback((prev: Feedback[]) => [...prev, newFeedback]);
     setFeedbackMessage('');
+    setFeedbackRating(0);
+    setError('');
     showNotification('Thank you for your feedback!');
   };
 
@@ -2679,6 +2708,16 @@ const KYWashSystem = () => {
               >
                 💬 Feedback
               </button>
+              <button
+                onClick={() => setShowFoundersView(!showFoundersView)}
+                className={`px-4 py-2 rounded-lg font-medium transition ${
+                  showFoundersView
+                    ? 'bg-blue-600 text-white'
+                    : darkMode ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' : 'bg-white text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                👥 Founders
+              </button>
             </div>
 
             {/* Machines Grid */}
@@ -3184,6 +3223,36 @@ const KYWashSystem = () => {
                   }`}
                   rows={5}
                 />
+
+                {/* 5-Star Rating */}
+                <div className="mt-4 mb-4">
+                  <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    How would you rate your experience? (5 stars = excellent)
+                  </label>
+                  <div className="flex gap-2">
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <button
+                        key={star}
+                        onClick={() => setFeedbackRating(star)}
+                        className={`text-4xl transition-transform ${
+                          feedbackRating >= star
+                            ? 'text-yellow-400 scale-110'
+                            : darkMode ? 'text-gray-600 hover:text-gray-400' : 'text-gray-300 hover:text-gray-400'
+                        }`}
+                      >
+                        ⭐
+                      </button>
+                    ))}
+                  </div>
+                  {feedbackRating > 0 && (
+                    <p className={`text-sm mt-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      Rating: {feedbackRating} / 5 stars
+                    </p>
+                  )}
+                </div>
+
+                {error && <div className="text-red-400 text-sm mb-4">{error}</div>}
+
                 <button
                   onClick={submitFeedback}
                   className={`w-full mt-4 px-4 py-2 rounded-lg font-semibold transition-colors ${
@@ -3235,6 +3304,60 @@ const KYWashSystem = () => {
                     </div>
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Founders View */}
+            {showFoundersView && user && (
+              <div className="space-y-6">
+                <div className={`rounded-lg shadow-md p-6 transition-colors ${
+                  darkMode ? 'bg-gray-800' : 'bg-white'
+                }`}>
+                  <h2 className={`text-3xl font-bold mb-4 flex items-center gap-2 ${
+                    darkMode ? 'text-white' : 'text-gray-800'
+                  }`}>
+                    👥 Meet the Founders
+                  </h2>
+                  <p className={`mb-6 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                    Get to know the talented founders behind KY Wash who are dedicated to improving our laundry services for everyone.
+                  </p>
+                  
+                  {founders.length === 0 ? (
+                    <p className={`text-center py-8 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      No founders have been added yet.
+                    </p>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      {founders.map((founder: Founder) => (
+                        <div
+                          key={founder.id}
+                          className={`rounded-lg overflow-hidden shadow-lg transition-transform hover:shadow-xl hover:scale-105 ${
+                            darkMode ? 'bg-gray-700' : 'bg-gray-50'
+                          }`}
+                        >
+                          {founder.profileImage && (
+                            <img
+                              src={founder.profileImage}
+                              alt={founder.name}
+                              className="w-full h-56 object-cover"
+                            />
+                          )}
+                          <div className="p-5">
+                            <p className={`text-xl font-bold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                              {founder.name}
+                            </p>
+                            <p className={`text-sm font-bold mb-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+                              📚 <span className="font-bold">{founder.scholarship}</span>
+                            </p>
+                            <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                              🎓 {founder.course}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -4074,7 +4197,7 @@ const KYWashSystem = () => {
 
       {/* Completion Notification Modal - Rings continuously until user takes action */}
       {showNotificationModal && activeNotification && (
-        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4 animate-pulse">
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
           <div className={`rounded-lg shadow-2xl max-w-md w-full p-8 transition-colors text-center ${
             darkMode ? 'bg-red-900' : 'bg-red-50'
           }`}>

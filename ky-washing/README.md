@@ -1,53 +1,218 @@
-<a href="https://demo-nextjs-with-supabase.vercel.app/">
-  <img alt="Next.js and Supabase Starter Kit - the fastest way to build apps with Next.js and Supabase" src="https://demo-nextjs-with-supabase.vercel.app/opengraph-image.png">
-  <h1 align="center">Next.js and Supabase Starter Kit</h1>
+<a href="https://ky-wash.vercel.app/">
+  <h1 align="center">KY-Wash - Laundry Management System</h1>
 </a>
 
 <p align="center">
- The fastest way to build apps with Next.js and Supabase
+ A modern laundry management system built with Next.js and Supabase
 </p>
 
 <p align="center">
   <a href="#features"><strong>Features</strong></a> ·
-  <a href="#demo"><strong>Demo</strong></a> ·
-  <a href="#deploy-to-vercel"><strong>Deploy to Vercel</strong></a> ·
-  <a href="#clone-and-run-locally"><strong>Clone and run locally</strong></a> ·
-  <a href="#feedback-and-issues"><strong>Feedback and issues</strong></a>
-  <a href="#more-supabase-examples"><strong>More Examples</strong></a>
+  <a href="#quick-start"><strong>Quick Start</strong></a> ·
+  <a href="#setup"><strong>Setup Guide</strong></a> ·
+  <a href="#documentation"><strong>Documentation</strong></a>
 </p>
 <br/>
 
-## Features
+## 🎯 Features
 
-- Works across the entire [Next.js](https://nextjs.org) stack
-  - App Router
-  - Pages Router
-  - Proxy
-  - Client
-  - Server
-  - It just works!
-- supabase-ssr. A package to configure Supabase Auth to use cookies
-- Password-based authentication block installed via the [Supabase UI Library](https://supabase.com/ui/docs/nextjs/password-based-auth)
-- Styling with [Tailwind CSS](https://tailwindcss.com)
-- Components with [shadcn/ui](https://ui.shadcn.com/)
-- Optional deployment with [Supabase Vercel Integration and Vercel deploy](#deploy-your-own)
-  - Environment variables automatically assigned to Vercel project
+### ✅ Machine Management
+- Real-time machine status monitoring
+- Start/complete/collect cycles
+- Queue management
+- Machine availability tracking
+- Maintenance logs
 
-## Demo
+### ✅ Analytics & Tracking
+- Google Analytics integration
+- Custom event tracking
+- Machine usage analytics
+- Peak hour identification
+- User behavior analytics
 
-You can view a fully working demo at [demo-nextjs-with-supabase.vercel.app](https://demo-nextjs-with-supabase.vercel.app/).
+### ✅ User Experience
+- Auto-unlock timer with grace period
+- Enhanced notification system (ring + continuous alerts)
+- Session tracking
+- User notifications
+- Machine queue notifications
 
-## Deploy to Vercel
+### ✅ Data Persistence
+- **17 PostgreSQL tables** for complete data storage
+- All machine cycles tracked
+- User sessions logged
+- Analytics events recorded
+- Real-time synchronization with Supabase
 
-Vercel deployment will guide you through creating a Supabase account and project.
+### 🏗️ Tech Stack
+- [Next.js](https://nextjs.org) - App Router & Server Components
+- [Supabase](https://supabase.com) - PostgreSQL Database & Auth
+- [TypeScript](https://www.typescriptlang.org/) - Type Safety
+- [Tailwind CSS](https://tailwindcss.com) - Styling
+- [shadcn/ui](https://ui.shadcn.com/) - Components
+- [Google Analytics](https://analytics.google.com/) - Event Tracking
 
-After installation of the Supabase integration, all relevant environment variables will be assigned to the project so the deployment is fully functioning.
+## 🚀 Quick Start
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fvercel%2Fnext.js%2Ftree%2Fcanary%2Fexamples%2Fwith-supabase&project-name=nextjs-with-supabase&repository-name=nextjs-with-supabase&demo-title=nextjs-with-supabase&demo-description=This+starter+configures+Supabase+Auth+to+use+cookies%2C+making+the+user%27s+session+available+throughout+the+entire+Next.js+app+-+Client+Components%2C+Server+Components%2C+Route+Handlers%2C+Server+Actions+and+Middleware.&demo-url=https%3A%2F%2Fdemo-nextjs-with-supabase.vercel.app%2F&external-id=https%3A%2F%2Fgithub.com%2Fvercel%2Fnext.js%2Ftree%2Fcanary%2Fexamples%2Fwith-supabase&demo-image=https%3A%2F%2Fdemo-nextjs-with-supabase.vercel.app%2Fopengraph-image.png)
+```bash
+# Install dependencies
+npm install
 
-The above will also clone the Starter kit to your GitHub, you can clone that locally and develop locally.
+# Set up environment variables
+cp .env.example .env.local
+# Edit .env.local with your Supabase credentials
 
-If you wish to just develop locally and not deploy to Vercel, [follow the steps below](#clone-and-run-locally).
+# Run development server
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) and start using the app!
+
+## 📋 Complete Setup Guide
+
+### Step 1: Create Supabase Project
+1. Go to [supabase.com](https://supabase.com)
+2. Click "New Project"
+3. Enter project name: "KY-Wash"
+4. Create a strong database password
+5. Wait for setup to complete
+
+### Step 2: Get Your Credentials
+1. Go to **Settings → API**
+2. Copy your **Project URL** → `NEXT_PUBLIC_SUPABASE_URL`
+3. Copy **Anon Public Key** → `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+
+### Step 3: Update Environment Variables
+Edit `.env.local`:
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=your-anon-key-here
+```
+
+### Step 4: Create Database Tables
+1. In Supabase, go to **SQL Editor**
+2. Click **New Query**
+3. Copy the entire SQL schema from [SUPABASE_SCHEMA.md](./SUPABASE_SCHEMA.md)
+4. Paste into the editor
+5. Click **Run**
+6. Verify all 17 tables created
+
+### Step 5: Start the App
+```bash
+npm run dev
+```
+
+### Step 6: Verify Connection
+1. Open browser console (F12)
+2. Log in to the app
+3. Go to Supabase → Table Editor
+4. Check `user_sessions` table for your login
+5. Check `analytics_events` table for tracked events
+
+---
+
+## 📚 Documentation
+
+- **[SETUP_CHECKLIST.md](./SETUP_CHECKLIST.md)** - Complete setup checklist & verification
+- **[SUPABASE_INTEGRATION.md](./SUPABASE_INTEGRATION.md)** - Integration guide with code examples
+- **[SUPABASE_SCHEMA.md](../SUPABASE_SCHEMA.md)** - Database schema & SQL (run in Supabase)
+- **[FEATURE_GUIDE.md](./FEATURE_GUIDE.md)** - Feature documentation
+- **[QUICK_REFERENCE.md](./QUICK_REFERENCE.md)** - Quick reference guide
+
+---
+
+## 🗂️ Project Structure
+
+```
+ky-washing/
+├── app/
+│   ├── machines/          # Machine management page
+│   ├── analytics/         # Analytics dashboard
+│   └── auth/             # Authentication pages
+├── lib/
+│   ├── services/         # ✅ Supabase service layer
+│   │   ├── machineCycles.ts
+│   │   ├── analytics.ts
+│   │   ├── machines.ts
+│   │   ├── userSessions.ts
+│   │   └── notifications.ts
+│   ├── supabase/         # Supabase client setup
+│   ├── dataCollection.ts # ✅ Now syncs to Supabase
+│   └── ...
+├── components/           # UI components
+├── types/
+│   └── supabase.ts      # TypeScript types
+└── README.md
+```
+
+---
+
+## 💾 Data Syncing
+
+All data is **automatically synced** to Supabase:
+- ✅ Machine cycles (start, complete, collect)
+- ✅ User sessions (login, logout)
+- ✅ Analytics events (all user actions)
+- ✅ Notifications (cycle complete, collections, etc.)
+- ✅ Machine status (real-time updates)
+
+### Example: Starting a Machine
+
+```typescript
+import { useDataCollection } from '@/lib/dataCollection';
+
+export function MyComponent() {
+  const { trackEvent } = useDataCollection();
+
+  const handleStart = async () => {
+    // Automatically synced to machine_cycles table
+    await trackEvent('machine_started', {
+      userId: 'user-123',
+      machineId: 1,
+      machineType: 'washer',
+      duration: 45,
+    });
+  };
+}
+```
+
+---
+
+## 🔍 API/Service Layer
+
+### Machine Cycles Service
+```typescript
+import { machineCyclesService } from '@/lib/services/machineCycles';
+
+// Start cycle
+await machineCyclesService.startCycle({...});
+
+// Complete cycle
+await machineCyclesService.completeCycle(cycleId, {...});
+
+// Mark as collected
+await machineCyclesService.markAsCollected(cycleId);
+```
+
+### Analytics Service
+```typescript
+import { analyticsService } from '@/lib/services/analytics';
+
+// Track event
+await analyticsService.trackEvent({...});
+
+// Get user analytics
+const data = await analyticsService.getUserAnalytics(userId);
+```
+
+### Other Services
+- **machinesService** - Get/update machine data
+- **userSessionsService** - Manage sessions
+- **notificationsService** - Send notifications
+
+See [SUPABASE_INTEGRATION.md](./SUPABASE_INTEGRATION.md) for complete API docs.
+
+---
 
 ## Clone and run locally
 
@@ -87,6 +252,7 @@ If you wish to just develop locally and not deploy to Vercel, [follow the steps 
   Both `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` can be found in [your Supabase project's API settings](https://supabase.com/dashboard/project/_?showConnect=true)
 
 5. You can now run the Next.js local development server:
+
 
    ```bash
    npm run dev
