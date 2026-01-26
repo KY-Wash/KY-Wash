@@ -3149,6 +3149,13 @@ const KYWashSystem = () => {
                             }`}>
                               No one is using this machine?
                             </p>
+                            {(machineReportCounts.get(`washer-${machine.id}`) || 0) > 0 && (
+                              <p className={`text-xs mb-2 font-bold px-2 py-1 rounded ${
+                                darkMode ? 'bg-red-900 text-red-300' : 'bg-red-100 text-red-700'
+                              }`}>
+                                ⚠️ Reports: {machineReportCounts.get(`washer-${machine.id}`) || 0} / 2
+                              </p>
+                            )}
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -3329,6 +3336,13 @@ const KYWashSystem = () => {
                             }`}>
                               No one is using this machine?
                             </p>
+                            {(machineReportCounts.get(`dryer-${machine.id}`) || 0) > 0 && (
+                              <p className={`text-xs mb-2 font-bold px-2 py-1 rounded ${
+                                darkMode ? 'bg-red-900 text-red-300' : 'bg-red-100 text-red-700'
+                              }`}>
+                                ⚠️ Reports: {machineReportCounts.get(`dryer-${machine.id}`) || 0} / 2
+                              </p>
+                            )}
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
