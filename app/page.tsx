@@ -1092,12 +1092,26 @@ const KYWashSystem = () => {
     if (newCount === 1) {
       showNotification('⚠️ One "No One" report logged. One more report will stop the timer and unlock this machine.');
     } else if (newCount >= 2) {
+      // Get the machine to find the student who started it
+      const machine = machines.find((m: Machine) => m.id === machineId && m.type === machineType);
+      
       // Stop the timer and unlock the machine
-      setMachines((prev: Machine[]) => prev.map((machine: Machine) =>
-        machine.id === machineId && machine.type === machineType
-          ? { ...machine, status: 'available', timeLeft: 0, mode: null, userStudentId: null, userPhone: null, locked: false }
-          : machine
+      setMachines((prev: Machine[]) => prev.map((m: Machine) =>
+        m.id === machineId && m.type === machineType
+          ? { ...m, status: 'available', timeLeft: 0, mode: null, userStudentId: null, userPhone: null, locked: false }
+          : m
       ));
+      
+      // Remove the usage record from history (do not reflect spending)
+      setUsageHistory((prev: UsageHistory[]) => {
+        return prev.filter((record: UsageHistory) => {
+          // Remove records for this machine started by the student who was using it
+          if (machine && record.machine_id === machineId && record.type === machineType && record.studentId === machine.userStudentId) {
+            return false;
+          }
+          return true;
+        });
+      });
       
       // Clear report count
       setMachineReportCounts((prev) => {
@@ -1106,7 +1120,7 @@ const KYWashSystem = () => {
         return updated;
       });
       
-      showNotification(`✅ Machine ${machineType} #${machineId} timer has been stopped and machine is now available for others.`);
+      showNotification(`✅ Machine ${machineType} #${machineId} timer has been stopped and machine is now available for others. No charges applied.`);
     }
   };
 
@@ -3078,7 +3092,7 @@ const KYWashSystem = () => {
                                 darkMode ? 'bg-orange-700 hover:bg-orange-600 text-white' : 'bg-orange-500 hover:bg-orange-600 text-white'
                               }`}
                             >
-                              Machine is Ready
+                              Machine is Done
                             </button>
                           </>
                         )}
@@ -3258,7 +3272,7 @@ const KYWashSystem = () => {
                                 darkMode ? 'bg-orange-700 hover:bg-orange-600 text-white' : 'bg-orange-500 hover:bg-orange-600 text-white'
                               }`}
                             >
-                              Machine is Ready
+                              Machine is Done
                             </button>
                           </>
                         )}
@@ -4314,12 +4328,12 @@ const KYWashSystem = () => {
             <h2 className={`text-2xl font-bold mb-4 ${
               darkMode ? 'text-orange-300' : 'text-orange-900'
             }`}>
-              Is this {showMachineReadyConfirm.machineType} empty?
+              Is this {showMachineReadyConfirm.machineType} empty and finished?
             </h2>
             <p className={`text-lg mb-6 ${
               darkMode ? 'text-orange-200' : 'text-orange-800'
             }`}>
-              Please confirm if {showMachineReadyConfirm.machineType} #{showMachineReadyConfirm.machineId} is now empty and ready for the next user.
+              Confirm if {showMachineReadyConfirm.machineType} #{showMachineReadyConfirm.machineId} is now empty. Other users will be able to start immediately.
             </p>
             <div className="space-y-3">
               <button
