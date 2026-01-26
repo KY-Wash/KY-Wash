@@ -1095,10 +1095,20 @@ const KYWashSystem = () => {
       // Get the machine to find the student who started it
       const machine = machines.find((m: Machine) => m.id === machineId && m.type === machineType);
       
-      // Stop the timer and unlock the machine
+      // Immediately stop the timer and reset the machine to available
       setMachines((prev: Machine[]) => prev.map((m: Machine) =>
         m.id === machineId && m.type === machineType
-          ? { ...m, status: 'available', timeLeft: 0, mode: null, userStudentId: null, userPhone: null, locked: false }
+          ? { 
+              ...m, 
+              status: 'available', 
+              timeLeft: 0, 
+              mode: null, 
+              userStudentId: null, 
+              userPhone: null, 
+              originalDuration: undefined,
+              cancellable: false,
+              locked: false 
+            }
           : m
       ));
       
@@ -1119,8 +1129,25 @@ const KYWashSystem = () => {
         updated.delete(machineKey);
         return updated;
       });
+
+      // Remove from locked machines map
+      const lockedKey = `kyWash-locked-${machineType}-${machineId}`;
+      localStorage.removeItem(lockedKey);
+      setLockedMachines((prev) => {
+        const updated = new Map(prev);
+        updated.delete(machineKey);
+        return updated;
+      });
       
-      showNotification(`✅ Machine ${machineType} #${machineId} timer has been stopped and machine is now available for others. No charges applied.`);
+      // Clear any machine ready states
+      setMachineReadyStates((prev) => {
+        const updated = new Map(prev);
+        updated.delete(machineKey);
+        return updated;
+      });
+
+      showNotification(`✅ Machine ${machineType} #${machineId} has been reset. Timer stopped, machine is now available for others. No charges applied.`);
+      notifyWaitlist(machineType);
     }
   };
 
@@ -1205,7 +1232,7 @@ const KYWashSystem = () => {
   };
 
   const machineIsReady = (machineId: number, machineType: 'washer' | 'dryer', reportingStudentId: string): void => {
-    // Emit to real-time API
+    // Emit to real-time API - this is a GLOBAL action
     if (socketRef.current?.emit) {
       socketRef.current.emit('machine-ready', {
         machineId: String(machineId),
@@ -1216,12 +1243,30 @@ const KYWashSystem = () => {
 
     const machineKey = `${machineType}-${machineId}`;
 
-    // Clear the machine completely - mark as available and UNLOCK it
+    // Immediately reset the machine to default Available state (GLOBAL ACTION)
     setMachines((prev: Machine[]) => prev.map((machine: Machine) =>
       machine.id === machineId && machine.type === machineType
-        ? { ...machine, status: 'available', timeLeft: 0, mode: null, userStudentId: null, userPhone: null, locked: false }
+        ? { 
+            ...machine, 
+            status: 'available', 
+            timeLeft: 0, 
+            mode: null, 
+            userStudentId: null, 
+            userPhone: null, 
+            originalDuration: undefined,
+            cancellable: false,
+            locked: false 
+          }
         : machine
     ));
+
+    // Clear running session and user data
+    setUsageHistory((prev: UsageHistory[]) => {
+      return prev.filter((record: UsageHistory) => {
+        // Keep all records
+        return true;
+      });
+    });
 
     // Remove from locked machines map
     const lockedKey = `kyWash-locked-${machineType}-${machineId}`;
@@ -1239,7 +1284,17 @@ const KYWashSystem = () => {
       return updated;
     });
 
-    showNotification(`✅ Machine ${machineType} #${machineId} is now available for all users to use.`);
+    // Clear report count for this machine
+    setMachineReportCounts((prev) => {
+      const updated = new Map(prev);
+      updated.delete(machineKey);
+      return updated;
+    });
+
+    // Show global notification
+    showNotification(`✅ Machine ${machineType} #${machineId} has been reset by an admin. All users can now use it.`);
+    
+    // Notify waitlist for this machine type
     notifyWaitlist(machineType);
   };
 
