@@ -179,6 +179,7 @@ const KYWashSystem = () => {
   const socketRef = useRef<{ emit: (event: string, data: any) => Promise<void> } | null>(null);
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const machineTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Initialize real-time sync with polling
   useEffect(() => {
@@ -359,7 +360,7 @@ const KYWashSystem = () => {
 
   // Continuous local timer countdown for running machines
   useEffect(() => {
-    const timerInterval = setInterval(() => {
+    machineTimerRef.current = setInterval(() => {
       setMachines((prevMachines: Machine[]) => {
         return prevMachines.map((machine: Machine) => {
           // Only countdown machines that are actively running
@@ -387,7 +388,12 @@ const KYWashSystem = () => {
       });
     }, 1000);
 
-    return () => clearInterval(timerInterval);
+    return () => {
+      if (machineTimerRef.current) {
+        clearInterval(machineTimerRef.current);
+        machineTimerRef.current = null;
+      }
+    };
   }, []);
 
   // Persist usage history to localStorage whenever it changes
@@ -1069,61 +1075,72 @@ const KYWashSystem = () => {
 
   const reportNoOne = (machineId: number, machineType: 'washer' | 'dryer'): void => {
     const machineKey = `${machineType}-${machineId}`;
-    const currentCount = machineReportCounts.get(machineKey) || 0;
+    const currentCount = Math.max(0, machineReportCounts.get(machineKey) || 0); // Error handling: ensure non-negative
     const newCount = currentCount + 1;
 
-    // Update report count
+    // Update report count in global state (all users will see this)
     setMachineReportCounts((prev) => {
       const updated = new Map(prev);
       updated.set(machineKey, newCount);
       return updated;
     });
 
-    // Emit to real-time API
+    // Emit to real-time API for global synchronization
     if (socketRef.current?.emit) {
       socketRef.current.emit('no-one-report', {
         machineId: String(machineId),
         machineType: machineType,
         reportedBy: user?.studentId || 'unknown',
         reportCount: newCount,
+        timestamp: Date.now(),
       });
     }
 
     if (newCount === 1) {
+      // First report - just notify
       showNotification('⚠️ One "No One" report logged. One more report will stop the timer and unlock this machine.');
     } else if (newCount >= 2) {
-      // Get the machine to find the student who started it
+      // Second report - IMMEDIATE MACHINE STOP
       const machine = machines.find((m: Machine) => m.id === machineId && m.type === machineType);
       
-      // Immediately stop the timer and reset the machine to available
-      setMachines((prev: Machine[]) => prev.map((m: Machine) =>
-        m.id === machineId && m.type === machineType
-          ? { 
-              ...m, 
-              status: 'available', 
-              timeLeft: 0, 
-              mode: null, 
-              userStudentId: null, 
-              userPhone: null, 
-              originalDuration: undefined,
-              cancellable: false,
-              locked: false 
-            }
-          : m
-      ));
-      
-      // Mark the usage record as Completed (cycle completed after 2 reports)
+      // CRITICAL: Stop all timers immediately
+      if (machineTimerRef.current) {
+        clearInterval(machineTimerRef.current);
+        machineTimerRef.current = null;
+      }
+
+      // Reset machine to DEFAULT/AVAILABLE state for all users
+      setMachines((prev: Machine[]) => prev.map((m: Machine) => {
+        if (m.id === machineId && m.type === machineType) {
+          return { 
+            ...m, 
+            status: 'available',           // DEFAULT state
+            timeLeft: 0,                   // Clear remaining time
+            mode: null,                    // Clear mode
+            userStudentId: null,           // Clear user
+            userPhone: null,               // Clear phone
+            originalDuration: undefined,   // Clear duration
+            cancellable: false,            // Not cancellable
+            locked: false                  // Unlock machine
+          };
+        }
+        return m;
+      }));
+
+      // Clear all active session data for this cycle
       setUsageHistory((prev: UsageHistory[]) => {
         return prev.map((record: UsageHistory) => {
-          // Mark records for this machine started by the student who was using it as Completed
-          if (machine && record.machine_id === machineId && record.type === machineType && record.studentId === machine.userStudentId) {
+          if (machine && record.machine_id === machineId && 
+              record.type === machineType && 
+              record.studentId === machine.userStudentId &&
+              record.status !== 'Completed') {
             return { ...record, status: 'Completed' };
           }
           return record;
         });
       });
 
-      // Update Supabase - update usage record status to Completed
+      // Update Supabase to reflect completion
       if (machine && machine.userStudentId) {
         const usageRecordForMachine = usageHistory.find(
           (record: UsageHistory) => record.machine_id === machineId && 
@@ -1132,36 +1149,49 @@ const KYWashSystem = () => {
           record.status !== 'Completed'
         );
         
-        if (usageRecordForMachine && usageRecordForMachine.id) {
+        if (usageRecordForMachine?.id) {
           updateUsageRecordStatus(usageRecordForMachine.id, 'Completed');
         }
       }
-      
-      // Clear report count
-      setMachineReportCounts((prev) => {
-        const updated = new Map(prev);
-        updated.delete(machineKey);
-        return updated;
-      });
 
-      // Remove from locked machines map
+      // Clear all machine metadata
       const lockedKey = `kyWash-locked-${machineType}-${machineId}`;
       localStorage.removeItem(lockedKey);
+      
       setLockedMachines((prev) => {
         const updated = new Map(prev);
         updated.delete(machineKey);
         return updated;
       });
       
-      // Clear any machine ready states
       setMachineReadyStates((prev) => {
         const updated = new Map(prev);
         updated.delete(machineKey);
         return updated;
       });
 
-      showNotification(`✅ Machine ${machineType} #${machineId} washing and drying cycle completed. Timer stopped, machine is now available for others.`);
+      // Reset report count for next cycle
+      setMachineReportCounts((prev) => {
+        const updated = new Map(prev);
+        updated.delete(machineKey);
+        return updated;
+      });
+
+      // Notify all users globally
+      showNotification(`✅ Machine ${machineType} #${machineId} cycle completed & stopped. Machine now available for new users.`);
+      
+      // Notify waitlist so next user can start
       notifyWaitlist(machineType);
+
+      // Emit global notification event
+      if (socketRef.current?.emit) {
+        socketRef.current.emit('machine-force-stop', {
+          machineId: String(machineId),
+          machineType: machineType,
+          reason: 'two-no-one-reports',
+          timestamp: Date.now(),
+        });
+      }
     }
   };
 
@@ -1246,42 +1276,40 @@ const KYWashSystem = () => {
   };
 
   const machineIsReady = (machineId: number, machineType: 'washer' | 'dryer', reportingStudentId: string): void => {
-    // Emit to real-time API - this is a GLOBAL action
-    if (socketRef.current?.emit) {
-      socketRef.current.emit('machine-ready', {
-        machineId: String(machineId),
-        machineType: machineType,
-        reportingStudentId: reportingStudentId,
-      });
-    }
-
     const machineKey = `${machineType}-${machineId}`;
 
-    // Get the machine to find who was using it
+    // Get the machine state before reset
     const machine = machines.find((m: Machine) => m.id === machineId && m.type === machineType);
 
-    // Immediately reset the machine to default Available state (GLOBAL ACTION)
-    setMachines((prev: Machine[]) => prev.map((machine: Machine) =>
-      machine.id === machineId && machine.type === machineType
-        ? { 
-            ...machine, 
-            status: 'available', 
-            timeLeft: 0, 
-            mode: null, 
-            userStudentId: null, 
-            userPhone: null, 
-            originalDuration: undefined,
-            cancellable: false,
-            locked: false 
-          }
-        : machine
-    ));
+    // CRITICAL: Stop all timers immediately
+    if (machineTimerRef.current) {
+      clearInterval(machineTimerRef.current);
+      machineTimerRef.current = null;
+    }
 
-    // Mark the previous user's cycle as Completed (with clothes collected)
+    // IMMEDIATE state transition to DEFAULT/AVAILABLE for all users
+    setMachines((prev: Machine[]) => prev.map((m: Machine) => {
+      if (m.id === machineId && m.type === machineType) {
+        return {
+          ...m,
+          status: 'available',           // DEFAULT state
+          timeLeft: 0,                   // Ensure no remaining time
+          mode: null,                    // Clear mode
+          userStudentId: null,           // Clear user (for all users)
+          userPhone: null,               // Clear phone (for all users)
+          originalDuration: undefined,   // Clear duration
+          cancellable: false,            // Not cancellable
+          locked: false                  // Unlock machine
+        };
+      }
+      return m;
+    }));
+
+    // Clear active user session data
     setUsageHistory((prev: UsageHistory[]) => {
       return prev.map((record: UsageHistory) => {
-        // Mark records for this machine if they were in-progress or completed but not yet collected
-        if (machine && record.machine_id === machineId && 
+        if (machine && 
+            record.machine_id === machineId && 
             record.type === machineType && 
             record.studentId === machine.userStudentId &&
             record.status !== 'Completed') {
@@ -1291,46 +1319,58 @@ const KYWashSystem = () => {
       });
     });
 
-    // Update Supabase - mark previous user's cycle as completed
+    // Update Supabase to reflect cycle completion
     if (machine && machine.userStudentId) {
       const usageRecordForMachine = usageHistory.find(
-        (record: UsageHistory) => record.machine_id === machineId && 
-        record.type === machineType && 
-        record.studentId === machine.userStudentId
+        (record: UsageHistory) => 
+          record.machine_id === machineId && 
+          record.type === machineType && 
+          record.studentId === machine.userStudentId &&
+          record.status !== 'Completed'
       );
       
-      if (usageRecordForMachine && usageRecordForMachine.id) {
+      if (usageRecordForMachine?.id) {
         updateUsageRecordStatus(usageRecordForMachine.id, 'Completed');
       }
     }
 
-    // Remove from locked machines map
+    // Clear all machine metadata
     const lockedKey = `kyWash-locked-${machineType}-${machineId}`;
     localStorage.removeItem(lockedKey);
+    
     setLockedMachines((prev) => {
       const updated = new Map(prev);
       updated.delete(machineKey);
       return updated;
     });
     
-    // Clear any machine ready states
     setMachineReadyStates((prev) => {
       const updated = new Map(prev);
       updated.delete(machineKey);
       return updated;
     });
 
-    // Clear report count for this machine
+    // Clear any pending reports
     setMachineReportCounts((prev) => {
       const updated = new Map(prev);
       updated.delete(machineKey);
       return updated;
     });
 
-    // Show global notification with clear messaging
-    showNotification(`✅ Machine ${machineType} #${machineId}: Previous person's washing and drying cycle marked as completed and collected. Machine is now available for others.`);
+    // Emit global synchronization event
+    if (socketRef.current?.emit) {
+      socketRef.current.emit('machine-ready', {
+        machineId: String(machineId),
+        machineType: machineType,
+        reportingStudentId: reportingStudentId,
+        confirmTime: Date.now(),
+      });
+    }
+
+    // Notify all users (not just the confirmer)
+    showNotification(`✅ Cycle completed & clothes collected. Machine ${machineType} #${machineId} is now available for new users.`);
     
-    // Notify waitlist for this machine type
+    // Notify waitlist for this machine type so next user can start
     notifyWaitlist(machineType);
   };
 
