@@ -1112,16 +1112,30 @@ const KYWashSystem = () => {
           : m
       ));
       
-      // Remove the usage record from history (do not reflect spending)
+      // Mark the usage record as Completed (cycle completed after 2 reports)
       setUsageHistory((prev: UsageHistory[]) => {
-        return prev.filter((record: UsageHistory) => {
-          // Remove records for this machine started by the student who was using it
+        return prev.map((record: UsageHistory) => {
+          // Mark records for this machine started by the student who was using it as Completed
           if (machine && record.machine_id === machineId && record.type === machineType && record.studentId === machine.userStudentId) {
-            return false;
+            return { ...record, status: 'Completed' };
           }
-          return true;
+          return record;
         });
       });
+
+      // Update Supabase - update usage record status to Completed
+      if (machine && machine.userStudentId) {
+        const usageRecordForMachine = usageHistory.find(
+          (record: UsageHistory) => record.machine_id === machineId && 
+          record.type === machineType && 
+          record.studentId === machine.userStudentId &&
+          record.status !== 'Completed'
+        );
+        
+        if (usageRecordForMachine && usageRecordForMachine.id) {
+          updateUsageRecordStatus(usageRecordForMachine.id, 'Completed');
+        }
+      }
       
       // Clear report count
       setMachineReportCounts((prev) => {
@@ -1146,7 +1160,7 @@ const KYWashSystem = () => {
         return updated;
       });
 
-      showNotification(`✅ Machine ${machineType} #${machineId} has been reset. Timer stopped, machine is now available for others. No charges applied.`);
+      showNotification(`✅ Machine ${machineType} #${machineId} washing and drying cycle completed. Timer stopped, machine is now available for others.`);
       notifyWaitlist(machineType);
     }
   };
@@ -1243,6 +1257,9 @@ const KYWashSystem = () => {
 
     const machineKey = `${machineType}-${machineId}`;
 
+    // Get the machine to find who was using it
+    const machine = machines.find((m: Machine) => m.id === machineId && m.type === machineType);
+
     // Immediately reset the machine to default Available state (GLOBAL ACTION)
     setMachines((prev: Machine[]) => prev.map((machine: Machine) =>
       machine.id === machineId && machine.type === machineType
@@ -1260,13 +1277,32 @@ const KYWashSystem = () => {
         : machine
     ));
 
-    // Clear running session and user data
+    // Mark the previous user's cycle as Completed (with clothes collected)
     setUsageHistory((prev: UsageHistory[]) => {
-      return prev.filter((record: UsageHistory) => {
-        // Keep all records
-        return true;
+      return prev.map((record: UsageHistory) => {
+        // Mark records for this machine if they were in-progress or completed but not yet collected
+        if (machine && record.machine_id === machineId && 
+            record.type === machineType && 
+            record.studentId === machine.userStudentId &&
+            record.status !== 'Completed') {
+          return { ...record, status: 'Completed' };
+        }
+        return record;
       });
     });
+
+    // Update Supabase - mark previous user's cycle as completed
+    if (machine && machine.userStudentId) {
+      const usageRecordForMachine = usageHistory.find(
+        (record: UsageHistory) => record.machine_id === machineId && 
+        record.type === machineType && 
+        record.studentId === machine.userStudentId
+      );
+      
+      if (usageRecordForMachine && usageRecordForMachine.id) {
+        updateUsageRecordStatus(usageRecordForMachine.id, 'Completed');
+      }
+    }
 
     // Remove from locked machines map
     const lockedKey = `kyWash-locked-${machineType}-${machineId}`;
@@ -1291,8 +1327,8 @@ const KYWashSystem = () => {
       return updated;
     });
 
-    // Show global notification
-    showNotification(`✅ Machine ${machineType} #${machineId} has been reset by an admin. All users can now use it.`);
+    // Show global notification with clear messaging
+    showNotification(`✅ Machine ${machineType} #${machineId}: Previous person's washing and drying cycle marked as completed and collected. Machine is now available for others.`);
     
     // Notify waitlist for this machine type
     notifyWaitlist(machineType);
