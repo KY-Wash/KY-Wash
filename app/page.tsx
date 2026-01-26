@@ -140,11 +140,20 @@ const KYWashSystem = () => {
   const [feedbackRating, setFeedbackRating] = useState<number>(0);
   const [showFeedback, setShowFeedback] = useState<boolean>(false);
   const [adminFeedbackTab, setAdminFeedbackTab] = useState<boolean>(false);
+  const [showFoundersView, setShowFoundersView] = useState<boolean>(false);
+  const [showUserGuide, setShowUserGuide] = useState<boolean>(false);
   const [lockedMachines, setLockedMachines] = useState<Map<string, boolean>>(new Map());
   const [activeNotification, setActiveNotification] = useState<{ machineId: number; machineType: 'washer' | 'dryer' } | null>(null);
   const [showNotificationModal, setShowNotificationModal] = useState<boolean>(false);
   const [machineReadyStates, setMachineReadyStates] = useState<Map<string, boolean>>(new Map());
   const [showMachineReadyConfirm, setShowMachineReadyConfirm] = useState<{ machineId: number; machineType: 'washer' | 'dryer'; fromStudentId: string } | null>(null);
+  const [founders, setFounders] = useState<Founder[]>([]);
+  const [showFoundersForm, setShowFoundersForm] = useState<boolean>(false);
+  const [founderName, setFounderName] = useState<string>('');
+  const [founderScholarship, setFounderScholarship] = useState<string>('');
+  const [founderCourse, setFounderCourse] = useState<string>('');
+  const [founderProfileImage, setFounderProfileImage] = useState<string>('');
+  const [machineReportCounts, setMachineReportCounts] = useState<Map<string, number>>(new Map());
   const notificationAudioRef = useRef<AudioContext | null>(null);
   const notificationOscillatorRef = useRef<OscillatorNode | null>(null);
   const notificationGainRef = useRef<GainNode | null>(null);
@@ -412,6 +421,12 @@ const KYWashSystem = () => {
   }, [feedback]);
 
   // Persist founders to localStorage whenever they change
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('kyWashFounders', JSON.stringify(founders));
+    }
+  }, [founders]);
+
   // Persist locked machines to localStorage whenever they change
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -461,7 +476,16 @@ const KYWashSystem = () => {
         }
       }
 
-
+      // Load founders from localStorage if available
+      const savedFounders = localStorage.getItem('kyWashFounders');
+      if (savedFounders) {
+        try {
+          const parsedFounders = JSON.parse(savedFounders);
+          setFounders(parsedFounders);
+        } catch (error) {
+          console.error('Failed to load founders from localStorage:', error);
+        }
+      }
 
       // Load locked machines from localStorage if available
       const savedLockedMachines = localStorage.getItem('kyWashLockedMachines');
@@ -1043,6 +1067,49 @@ const KYWashSystem = () => {
     setIssueDescription('');
   };
 
+  const reportNoOne = (machineId: number, machineType: 'washer' | 'dryer'): void => {
+    const machineKey = `${machineType}-${machineId}`;
+    const currentCount = machineReportCounts.get(machineKey) || 0;
+    const newCount = currentCount + 1;
+
+    // Update report count
+    setMachineReportCounts((prev) => {
+      const updated = new Map(prev);
+      updated.set(machineKey, newCount);
+      return updated;
+    });
+
+    // Emit to real-time API
+    if (socketRef.current?.emit) {
+      socketRef.current.emit('no-one-report', {
+        machineId: String(machineId),
+        machineType: machineType,
+        reportedBy: user?.studentId || 'unknown',
+        reportCount: newCount,
+      });
+    }
+
+    if (newCount === 1) {
+      showNotification('⚠️ One "No One" report logged. One more report will auto-unlock this machine.');
+    } else if (newCount >= 2) {
+      // Auto-unlock the machine
+      setMachines((prev: Machine[]) => prev.map((machine: Machine) =>
+        machine.id === machineId && machine.type === machineType
+          ? { ...machine, status: 'available', timeLeft: 0, mode: null, userStudentId: null, userPhone: null, locked: false }
+          : machine
+      ));
+      
+      // Clear report count
+      setMachineReportCounts((prev) => {
+        const updated = new Map(prev);
+        updated.delete(machineKey);
+        return updated;
+      });
+      
+      showNotification(`✅ Machine ${machineType} #${machineId} has been automatically unlocked after 2 "No One" reports.`);
+    }
+  };
+
   const resolveIssue = (issueId: string): void => {
     // Emit to real-time API
     if (socketRef.current?.emit) {
@@ -1159,6 +1226,35 @@ const KYWashSystem = () => {
 
     showNotification('✅ Machine marked as empty! Now available for others.');
     notifyWaitlist(machineType);
+  };
+
+  const addFounder = (): void => {
+    if (!founderName.trim() || !founderScholarship.trim() || !founderCourse.trim()) {
+      setError('Please fill in all founder fields');
+      return;
+    }
+
+    const newFounder: Founder = {
+      id: `${Date.now()}-${Math.random()}`,
+      name: founderName,
+      scholarship: founderScholarship,
+      course: founderCourse,
+      profileImage: founderProfileImage,
+    };
+
+    setFounders((prev: Founder[]) => [...prev, newFounder]);
+    showNotification('Founder added successfully!');
+    setShowFoundersForm(false);
+    setFounderName('');
+    setFounderScholarship('');
+    setFounderCourse('');
+    setFounderProfileImage('');
+    setError('');
+  };
+
+  const deleteFounder = (founderId: string): void => {
+    setFounders((prev: Founder[]) => prev.filter((f: Founder) => f.id !== founderId));
+    showNotification('Founder removed successfully!');
   };
 
   // Feedback functions
@@ -1804,9 +1900,10 @@ const KYWashSystem = () => {
               <button
                 onClick={() => {
                   setAdminFeedbackTab(false);
+                  setShowFoundersForm(false);
                 }}
                 className={`px-4 py-2 rounded-lg font-medium transition ${
-                  !adminFeedbackTab
+                  !adminFeedbackTab && !showFoundersForm
                     ? 'bg-blue-600 text-white'
                     : darkMode ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' : 'bg-white text-gray-700 hover:bg-gray-100'
                 }`}
@@ -1816,14 +1913,28 @@ const KYWashSystem = () => {
               <button
                 onClick={() => {
                   setAdminFeedbackTab(true);
+                  setShowFoundersForm(false);
                 }}
                 className={`px-4 py-2 rounded-lg font-medium transition ${
-                  adminFeedbackTab
+                  adminFeedbackTab && !showFoundersForm
                     ? 'bg-blue-600 text-white'
                     : darkMode ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' : 'bg-white text-gray-700 hover:bg-gray-100'
                 }`}
               >
                 💬 Feedback ({feedback.length})
+              </button>
+              <button
+                onClick={() => {
+                  setShowFoundersForm(!showFoundersForm);
+                  setAdminFeedbackTab(false);
+                }}
+                className={`px-4 py-2 rounded-lg font-medium transition ${
+                  showFoundersForm
+                    ? 'bg-blue-600 text-white'
+                    : darkMode ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' : 'bg-white text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                👥 Founders ({founders.length})
               </button>
             </div>
 
@@ -2407,6 +2518,158 @@ const KYWashSystem = () => {
               </div>
             )}
 
+            {/* Founders Management Tab */}
+            {showFoundersForm && (
+              <div className={`rounded-lg shadow-md p-6 transition-colors ${
+                darkMode ? 'bg-gray-800' : 'bg-white'
+              }`}>
+                <h2 className={`text-2xl font-bold mb-4 flex items-center gap-2 ${
+                  darkMode ? 'text-white' : 'text-gray-800'
+                }`}>
+                  👥 Manage Founders
+                </h2>
+
+                {/* Add Founder Form */}
+                <div className={`rounded-lg p-4 mb-6 border-2 ${
+                  darkMode ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-200'
+                }`}>
+                  <h3 className={`text-lg font-semibold mb-4 ${darkMode ? 'text-white' : 'text-gray-800'}`}>
+                    Add New Founder
+                  </h3>
+                  
+                  {/* Profile Image Upload */}
+                  <div className="mb-4">
+                    <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      Profile Picture
+                    </label>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          const reader = new FileReader();
+                          reader.onloadend = () => {
+                            setFounderProfileImage(reader.result as string);
+                          };
+                          reader.readAsDataURL(file);
+                        }
+                      }}
+                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+                        darkMode ? 'bg-gray-600 text-white border-gray-500' : 'bg-white text-black border-gray-300'
+                      }`}
+                    />
+                    {founderProfileImage && (
+                      <img
+                        src={founderProfileImage}
+                        alt="Preview"
+                        className="mt-3 w-24 h-24 rounded-lg object-cover"
+                      />
+                    )}
+                  </div>
+
+                  {/* Name Input */}
+                  <div className="mb-4">
+                    <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      Founder Name
+                    </label>
+                    <input
+                      type="text"
+                      value={founderName}
+                      onChange={(e) => setFounderName(e.target.value)}
+                      placeholder="Enter founder name"
+                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+                        darkMode ? 'bg-gray-600 text-white border-gray-500' : 'bg-white text-black border-gray-300'
+                      }`}
+                    />
+                  </div>
+
+                  {/* Scholarship Input */}
+                  <div className="mb-4">
+                    <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      Scholarship (will appear in bold)
+                    </label>
+                    <input
+                      type="text"
+                      value={founderScholarship}
+                      onChange={(e) => setFounderScholarship(e.target.value)}
+                      placeholder="e.g., Merit Scholarship, Full Ride Scholarship"
+                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+                        darkMode ? 'bg-gray-600 text-white border-gray-500' : 'bg-white text-black border-gray-300'
+                      }`}
+                    />
+                  </div>
+
+                  {/* Course Input */}
+                  <div className="mb-4">
+                    <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      Course
+                    </label>
+                    <input
+                      type="text"
+                      value={founderCourse}
+                      onChange={(e) => setFounderCourse(e.target.value)}
+                      placeholder="e.g., Computer Science, Business Administration"
+                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+                        darkMode ? 'bg-gray-600 text-white border-gray-500' : 'bg-white text-black border-gray-300'
+                      }`}
+                    />
+                  </div>
+
+                  <button
+                    onClick={addFounder}
+                    className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors ${
+                      darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-600 hover:bg-green-700 text-white'
+                    }`}
+                  >
+                    ✅ Add Founder
+                  </button>
+                </div>
+
+                {/* Founders List */}
+                {founders.length === 0 ? (
+                  <p className={`${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>No founders added yet</p>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {founders.map((founder: Founder) => (
+                      <div
+                        key={founder.id}
+                        className={`p-4 rounded-lg border-2 transition ${
+                          darkMode ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-200'
+                        }`}
+                      >
+                        {founder.profileImage && (
+                          <img
+                            src={founder.profileImage}
+                            alt={founder.name}
+                            className="w-full h-40 rounded-lg object-cover mb-3"
+                          />
+                        )}
+                        <p className={`text-lg font-bold mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                          {founder.name}
+                        </p>
+                        <p className={`text-sm font-bold mb-1 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+                          📚 {founder.scholarship}
+                        </p>
+                        <p className={`text-sm mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                          🎓 {founder.course}
+                        </p>
+                        <button
+                          onClick={() => deleteFounder(founder.id)}
+                          className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                            darkMode ? 'bg-red-700 hover:bg-red-600 text-white' : 'bg-red-500 hover:bg-red-600 text-white'
+                          }`}
+                        >
+                          <Trash2 className="w-4 h-4 inline mr-2" />
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+              
             {/* Back to Login Button */}
             <div className="mt-8 flex justify-center">
               <button
@@ -2505,6 +2768,26 @@ const KYWashSystem = () => {
                 }`}
               >
                 💬 Feedback
+              </button>
+              <button
+                onClick={() => setShowFoundersView(!showFoundersView)}
+                className={`px-4 py-2 rounded-lg font-medium transition ${
+                  showFoundersView
+                    ? 'bg-blue-600 text-white'
+                    : darkMode ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' : 'bg-white text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                👥 Founders
+              </button>
+              <button
+                onClick={() => setShowUserGuide(!showUserGuide)}
+                className={`px-4 py-2 rounded-lg font-medium transition ${
+                  showUserGuide
+                    ? 'bg-blue-600 text-white'
+                    : darkMode ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' : 'bg-white text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                📖 User Guide
               </button>
             </div>
 
@@ -2763,6 +3046,27 @@ const KYWashSystem = () => {
                           </>
                         )}
 
+                        {machine.status === 'running' && (
+                          <>
+                            <p className={`text-xs mb-2 font-semibold ${
+                              darkMode ? 'text-yellow-400' : 'text-yellow-600'
+                            }`}>
+                              No one is using this machine?
+                            </p>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                reportNoOne(machine.id, 'washer');
+                              }}
+                              className={`w-full mt-1 px-2 py-1 rounded text-xs font-semibold transition-colors ${
+                                darkMode ? 'bg-yellow-700 hover:bg-yellow-600 text-white' : 'bg-yellow-500 hover:bg-yellow-600 text-white'
+                              }`}
+                            >
+                              Report No One
+                            </button>
+                          </>
+                        )}
+
                         {machine.status === 'pending-collection' && machine.userStudentId !== user.studentId && (
                           <>
                             <p className={`text-sm mb-3 font-semibold ${
@@ -2922,6 +3226,27 @@ const KYWashSystem = () => {
                           </>
                         )}
 
+                        {machine.status === 'running' && (
+                          <>
+                            <p className={`text-xs mb-2 font-semibold ${
+                              darkMode ? 'text-yellow-400' : 'text-yellow-600'
+                            }`}>
+                              No one is using this machine?
+                            </p>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                reportNoOne(machine.id, 'dryer');
+                              }}
+                              className={`w-full mt-1 px-2 py-1 rounded text-xs font-semibold transition-colors ${
+                                darkMode ? 'bg-yellow-700 hover:bg-yellow-600 text-white' : 'bg-yellow-500 hover:bg-yellow-600 text-white'
+                              }`}
+                            >
+                              Report No One
+                            </button>
+                          </>
+                        )}
+
                         {machine.status === 'pending-collection' && machine.userStudentId !== user.studentId && (
                           <>
                             <p className={`text-sm mb-3 font-semibold ${
@@ -3049,6 +3374,213 @@ const KYWashSystem = () => {
                 >
                   Submit Feedback
                 </button>
+
+                {/* Meet our Team - Founders Section */}
+                <div className={`mt-8 pt-8 border-t ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                  <h3 className={`text-2xl font-bold mb-4 ${
+                    darkMode ? 'text-white' : 'text-gray-800'
+                  }`}>
+                    👥 Meet Our Team - Founders
+                  </h3>
+                  <p className={`mb-6 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                    Get to know the founders of KY Wash who are dedicated to improving our laundry services.
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {/* Default Founder - Justin Low */}
+                    <div
+                      className={`rounded-lg overflow-hidden shadow-md transition hover:shadow-lg ${
+                        darkMode ? 'bg-gray-700' : 'bg-gray-50'
+                      }`}
+                    >
+                      <img
+                        src="/founderjustin.jpeg"
+                        alt="Justin Low Chun Xian"
+                        className="w-full h-48 object-cover"
+                      />
+                      <div className="p-4">
+                        <p className={`text-lg font-bold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                          Justin Low Chun Xian
+                        </p>
+                        <p className={`text-sm font-bold mb-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+                          📚 <span className="font-bold">Yayasan UEM Scholar</span>
+                        </p>
+                        <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                          🎓 Data Science
+                        </p>
+                      </div>
+                    </div>
+                    {/* Additional Founders from Form */}
+                    {founders.map((founder: Founder) => (
+                      <div
+                        key={founder.id}
+                        className={`rounded-lg overflow-hidden shadow-md transition hover:shadow-lg ${
+                          darkMode ? 'bg-gray-700' : 'bg-gray-50'
+                        }`}
+                      >
+                        {founder.profileImage && (
+                          <img
+                            src={founder.profileImage}
+                            alt={founder.name}
+                            className="w-full h-48 object-cover"
+                          />
+                        )}
+                        <div className="p-4">
+                          <p className={`text-lg font-bold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                            {founder.name}
+                          </p>
+                          <p className={`text-sm font-bold mb-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+                            📚 {founder.scholarship}
+                          </p>
+                          <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                            🎓 {founder.course}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Founders and User Guide Side-by-Side View */}
+            {(showFoundersView || showUserGuide) && user && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* User Guide - Left Side */}
+                {showUserGuide && (
+                  <div className={`rounded-lg shadow-md p-6 transition-colors ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+                    <div className="max-w-full">
+                      <h2 className={`text-3xl font-bold mb-6 ${darkMode ? 'text-white' : 'text-gray-800'}`}>KY Wash – User Guide</h2>
+                      <p className={`mb-6 text-lg ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>First time using KY Wash? Follow the steps below to get started!</p>
+                      
+                      <div className="space-y-6">
+                        {/* Section 1 */}
+                        <div className={`p-4 rounded-lg border-l-4 ${darkMode ? 'bg-gray-700 border-blue-500' : 'bg-blue-50 border-blue-500'}`}>
+                          <h3 className={`text-2xl font-bold mb-3 ${darkMode ? 'text-blue-300' : 'text-blue-800'}`}>1. Starting a Washer or Dryer</h3>
+                          <ul className={`space-y-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                            <li>✓ Select the Start button on the washer or dryer you want to use.</li>
+                            <li>✓ Other users will be able to see that the machine is running.</li>
+                            <li><strong>⚠️ Please only press Start if you are actually using the machine.</strong></li>
+                          </ul>
+                        </div>
+
+                        {/* Section 2 */}
+                        <div className={`p-4 rounded-lg border-l-4 ${darkMode ? 'bg-gray-700 border-green-500' : 'bg-green-50 border-green-500'}`}>
+                          <h3 className={`text-2xl font-bold mb-3 ${darkMode ? 'text-green-300' : 'text-green-800'}`}>2. Joining the Waitlist</h3>
+                          <p className={`mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>If all machines are in use, you may choose to Join the Waitlist.</p>
+                          <p className={`mb-3 font-semibold ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>The waitlist allows users to:</p>
+                          <ul className={`space-y-2 mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                            <li>• Indicate interest in using a washer or dryer</li>
+                            <li>• See how many others are also waiting</li>
+                          </ul>
+                          <div className={`p-3 rounded ${darkMode ? 'bg-gray-600' : 'bg-gray-200'}`}>
+                            <p className={`text-sm font-semibold ${darkMode ? 'text-yellow-300' : 'text-yellow-800'}`}>ℹ️ Important:</p>
+                            <ul className={`text-sm space-y-1 mt-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                              <li>• The waitlist is not a queue</li>
+                              <li>• It does not reserve a machine or guarantee turn order</li>
+                              <li>• Machines are available on a first-come, first-served basis in real life</li>
+                            </ul>
+                          </div>
+                        </div>
+
+                        {/* Section 3 */}
+                        <div className={`p-4 rounded-lg border-l-4 ${darkMode ? 'bg-gray-700 border-orange-500' : 'bg-orange-50 border-orange-500'}`}>
+                          <h3 className={`text-2xl font-bold mb-3 ${darkMode ? 'text-orange-300' : 'text-orange-800'}`}>3. Collecting Your Clothes</h3>
+                          <p className={`mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Once your wash or dry cycle is finished:</p>
+                          <ul className={`space-y-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                            <li>✓ Remove your laundry promptly.</li>
+                            <li>✓ Select "Clothes Collected" on the webapp.</li>
+                            <li>✓ This updates the machine status for other users.</li>
+                          </ul>
+                        </div>
+
+                        {/* Section 4 */}
+                        <div className={`p-4 rounded-lg border-l-4 ${darkMode ? 'bg-gray-700 border-purple-500' : 'bg-purple-50 border-purple-500'}`}>
+                          <h3 className={`text-2xl font-bold mb-3 ${darkMode ? 'text-purple-300' : 'text-purple-800'}`}>4. Marking a Machine as Empty</h3>
+                          <p className={`mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>If you see a washer or dryer that is empty and ready for use:</p>
+                          <ul className={`space-y-2 mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                            <li>✓ Select "Machine is Ready".</li>
+                            <li>✓ This updates the machine status so others know it is available.</li>
+                          </ul>
+                          <div className={`p-3 rounded ${darkMode ? 'bg-gray-600' : 'bg-gray-200'}`}>
+                            <p className={`text-sm font-semibold ${darkMode ? 'text-blue-300' : 'text-blue-800'}`}>🤝 This feature relies on community cooperation — please update accurately.</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Founders View - Right Side */}
+                {showFoundersView && (
+                  <div className={`rounded-lg shadow-md p-6 transition-colors ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+                    <h2 className={`text-2xl font-bold mb-6 ${darkMode ? 'text-white' : 'text-gray-800'}`}>Meet Our Founders</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      {[
+                        {
+                          name: "Justin Low Chun Xian",
+                          scholarship: "Yayasan UEM", 
+                          course: "Data Science",
+                          image: "/founder-placeholder.svg"
+                        }
+                      ].map((founder, index) => (
+                        <div
+                          key={index}
+                          className={`rounded-lg p-6 text-center transition-colors overflow-hidden shadow-lg ${darkMode ? 'bg-gray-700' : 'bg-gray-50'}`}
+                        >
+                          {founder.image && (
+                            <img
+                              src={founder.image}
+                              alt={founder.name}
+                              className="w-24 h-24 rounded-full mx-auto mb-4 object-cover border-4 border-blue-500"
+                              onError={(e) => {
+                                (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96' viewBox='0 0 96 96'%3E%3Ccircle cx='48' cy='48' r='48' fill='%23e5e7eb'/%3E%3Ccircle cx='48' cy='30' r='12' fill='%239ca3af'/%3E%3Cpath d='M30 55c0-9.94 8.06-18 18-18s18 8.06 18 18v5H30v-5z' fill='%239ca3af'/%3E%3C/svg%3E";
+                              }}
+                            />
+                          )}
+                          <h3 className={`text-xl font-bold mb-2 ${darkMode ? 'text-white' : 'text-gray-800'}`}>{founder.name}</h3>
+                          <p className={`text-blue-500 font-semibold mb-2`}>{founder.scholarship} Holder</p>
+                          <p className={`${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{founder.course}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Founders View Only */}
+            {showFoundersView && !showUserGuide && user && (
+              <div className={`rounded-lg shadow-md p-6 transition-colors ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+                <h2 className={`text-2xl font-bold mb-6 ${darkMode ? 'text-white' : 'text-gray-800'}`}>Meet Our Founders</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {[
+                    {
+                      name: "Justin Low Chun Xian",
+                      scholarship: "Yayasan UEM", 
+                      course: "Data Science",
+                      image: "/founder-placeholder.svg"
+                    }
+                  ].map((founder, index) => (
+                    <div
+                      key={index}
+                      className={`rounded-lg p-6 text-center transition-colors overflow-hidden shadow-lg ${darkMode ? 'bg-gray-700' : 'bg-gray-50'}`}
+                    >
+                      {founder.image && (
+                        <img
+                          src={founder.image}
+                          alt={founder.name}
+                          className="w-24 h-24 rounded-full mx-auto mb-4 object-cover border-4 border-blue-500"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96' viewBox='0 0 96 96'%3E%3Ccircle cx='48' cy='48' r='48' fill='%23e5e7eb'/%3E%3Ccircle cx='48' cy='30' r='12' fill='%239ca3af'/%3E%3Cpath d='M30 55c0-9.94 8.06-18 18-18s18 8.06 18 18v5H30v-5z' fill='%239ca3af'/%3E%3C/svg%3E";
+                          }}
+                        />
+                      )}
+                      <h3 className={`text-xl font-bold mb-2 ${darkMode ? 'text-white' : 'text-gray-800'}`}>{founder.name}</h3>
+                      <p className={`text-blue-500 font-semibold mb-2`}>{founder.scholarship} Holder</p>
+                      <p className={`${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{founder.course}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
