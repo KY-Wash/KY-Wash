@@ -145,8 +145,6 @@ const KYWashSystem = () => {
   const [lockedMachines, setLockedMachines] = useState<Map<string, boolean>>(new Map());
   const [activeNotification, setActiveNotification] = useState<{ machineId: number; machineType: 'washer' | 'dryer' } | null>(null);
   const [showNotificationModal, setShowNotificationModal] = useState<boolean>(false);
-  const [machineReadyStates, setMachineReadyStates] = useState<Map<string, boolean>>(new Map());
-  const [showMachineReadyConfirm, setShowMachineReadyConfirm] = useState<{ machineId: number; machineType: 'washer' | 'dryer'; fromStudentId: string } | null>(null);
   const [founders, setFounders] = useState<Founder[]>([]);
   const [showFoundersForm, setShowFoundersForm] = useState<boolean>(false);
   const [founderName, setFounderName] = useState<string>('');
@@ -1086,108 +1084,6 @@ const KYWashSystem = () => {
     setIssueDescription('');
   };
 
-  const reportNoOne = async (machineId: number, machineType: 'washer' | 'dryer'): Promise<void> => {
-    const machineKey = `${machineType}-${machineId}`;
-    const machine = machines.find((m: Machine) => m.id === machineId && m.type === machineType);
-
-    // CRITICAL: Stop local timer immediately to prevent freeze
-    if (machineTimerRef.current) {
-      clearInterval(machineTimerRef.current);
-      machineTimerRef.current = null;
-    }
-
-    // Optimistic UI update - make it available immediately
-    // This will be confirmed by backend response
-    setMachines((prev: Machine[]) => prev.map((m: Machine) => {
-      if (m.id === machineId && m.type === machineType) {
-        return { 
-          ...m, 
-          status: 'available',
-          timeLeft: 0,
-          mode: null,
-          userStudentId: null,
-          userPhone: null,
-          originalDuration: undefined,
-          cancellable: false,
-          locked: false
-        };
-      }
-      return m;
-    }));
-
-    // Clear machine metadata optimistically
-    const lockedKey = `kyWash-locked-${machineType}-${machineId}`;
-    localStorage.removeItem(lockedKey);
-    
-    setLockedMachines((prev) => {
-      const updated = new Map(prev);
-      updated.delete(machineKey);
-      return updated;
-    });
-    
-    setMachineReadyStates((prev) => {
-      const updated = new Map(prev);
-      updated.delete(machineKey);
-      return updated;
-    });
-
-    setMachineReportCounts((prev) => {
-      const updated = new Map(prev);
-      updated.delete(machineKey);
-      return updated;
-    });
-
-    // Clear usage history optimistically
-    if (machine && machine.userStudentId) {
-      setUsageHistory((prev: UsageHistory[]) => {
-        return prev.map((record: UsageHistory) => {
-          if (record.machine_id === machineId && 
-              record.type === machineType && 
-              record.studentId === machine.userStudentId &&
-              record.status !== 'Completed') {
-            return { ...record, status: 'Completed' };
-          }
-          return record;
-        });
-      });
-
-      // Update Supabase
-      const usageRecordForMachine = usageHistory.find(
-        (record: UsageHistory) => record.machine_id === machineId && 
-        record.type === machineType && 
-        record.studentId === machine.userStudentId &&
-        record.status !== 'Completed'
-      );
-      if (usageRecordForMachine?.id) {
-        updateUsageRecordStatus(usageRecordForMachine.id, 'Completed');
-      }
-    }
-
-    // Show notification
-    showNotification(`✅ Machine reported as not in use. Machine ${machineType} #${machineId} is now available for new users.`);
-
-    // SINGLE backend emit - wait for backend to process and respond
-    // Backend will update machine state and return it in response
-    if (socketRef.current?.emit) {
-      try {
-        await socketRef.current.emit('no-one-report', {
-          machineId: machineId,
-          machineType: machineType,
-          reportedBy: user?.studentId || 'unknown',
-          timestamp: Date.now(),
-        });
-      } catch (error) {
-        console.error('Error reporting no one:', error);
-        showNotification('❌ Failed to report. Please try again.');
-      }
-    }
-    
-    // Notify waitlist after a short delay to ensure backend processed
-    setTimeout(() => {
-      notifyWaitlist(machineType);
-    }, 100);
-  };
-
   const resolveIssue = (issueId: string): void => {
     // Emit to real-time API
     if (socketRef.current?.emit) {
@@ -1224,153 +1120,6 @@ const KYWashSystem = () => {
     }
 
     setUsageHistory((prev: UsageHistory[]) => prev.filter((record: UsageHistory) => record.id !== recordId));
-  };
-
-  const clothesCollected = (machineId: number, machineType: 'washer' | 'dryer'): void => {
-    if (!user) return;
-
-    // Emit to real-time API
-    if (socketRef.current?.emit) {
-      socketRef.current.emit('clothes-collected', {
-        machineId: String(machineId),
-        machineType: machineType,
-        studentId: user.studentId,
-      });
-    }
-
-    // Stop the continuous ring
-    stopContinuousNotificationRing();
-    setActiveNotification(null);
-    setShowNotificationModal(false);
-
-    // Mark machine as available and notify next waitlist user
-    setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
-      machine.id === machineId && machine.type === machineType
-        ? { ...machine, status: 'available', timeLeft: 0, mode: null, userStudentId: null, userPhone: null }
-        : machine
-    ));
-
-    showNotification('✅ Clothes collected! Machine is now available for others.');
-    notifyWaitlist(machineType);
-  };
-
-  const notifyComingToCollect = (machineId: number, machineType: 'washer' | 'dryer'): void => {
-    if (!user) return;
-
-    const machine = machines.find((m) => m.id === machineId && m.type === machineType);
-    if (!machine) return;
-
-    // Stop the continuous ring when user notifies they're coming
-    stopContinuousNotificationRing();
-    setActiveNotification(null);
-    setShowNotificationModal(false);
-
-    showNotification(`✅ You notified that you're coming to collect your clothes from ${machineType} ${machineId}.`);
-  };
-
-  const machineIsReady = async (machineId: number, machineType: 'washer' | 'dryer', reportingStudentId: string): Promise<void> => {
-    const machineKey = `${machineType}-${machineId}`;
-    const machine = machines.find((m: Machine) => m.id === machineId && m.type === machineType);
-
-    // CRITICAL: Stop all timers immediately
-    if (machineTimerRef.current) {
-      clearInterval(machineTimerRef.current);
-      machineTimerRef.current = null;
-    }
-
-    // Optimistic UI update - make it available immediately
-    // This will be confirmed by backend response
-    setMachines((prev: Machine[]) => prev.map((m: Machine) => {
-      if (m.id === machineId && m.type === machineType) {
-        return {
-          ...m,
-          status: 'available',
-          timeLeft: 0,
-          mode: null,
-          userStudentId: null,
-          userPhone: null,
-          originalDuration: undefined,
-          cancellable: false,
-          locked: false
-        };
-      }
-      return m;
-    }));
-
-    // Clear active user session data optimistically
-    if (machine && machine.userStudentId) {
-      setUsageHistory((prev: UsageHistory[]) => {
-        return prev.map((record: UsageHistory) => {
-          if (record.machine_id === machineId && 
-              record.type === machineType && 
-              record.studentId === machine.userStudentId &&
-              record.status !== 'Completed') {
-            return { ...record, status: 'Completed' };
-          }
-          return record;
-        });
-      });
-
-      // Update Supabase to reflect cycle completion
-      const usageRecordForMachine = usageHistory.find(
-        (record: UsageHistory) => 
-          record.machine_id === machineId && 
-          record.type === machineType && 
-          record.studentId === machine.userStudentId &&
-          record.status !== 'Completed'
-      );
-      
-      if (usageRecordForMachine?.id) {
-        updateUsageRecordStatus(usageRecordForMachine.id, 'Completed');
-      }
-    }
-
-    // Clear all machine metadata
-    const lockedKey = `kyWash-locked-${machineType}-${machineId}`;
-    localStorage.removeItem(lockedKey);
-    
-    setLockedMachines((prev) => {
-      const updated = new Map(prev);
-      updated.delete(machineKey);
-      return updated;
-    });
-    
-    setMachineReadyStates((prev) => {
-      const updated = new Map(prev);
-      updated.delete(machineKey);
-      return updated;
-    });
-
-    // Clear any pending reports
-    setMachineReportCounts((prev) => {
-      const updated = new Map(prev);
-      updated.delete(machineKey);
-      return updated;
-    });
-
-    // Show notification
-    showNotification(`✅ Clothes collected! Machine ${machineType} #${machineId} is now available for new users.`);
-
-    // SINGLE backend emit - wait for backend to process and respond
-    // Backend will update machine state and return it in response
-    if (socketRef.current?.emit) {
-      try {
-        await socketRef.current.emit('machine-ready', {
-          machineId: machineId,
-          machineType: machineType,
-          reportingStudentId: reportingStudentId,
-          timestamp: Date.now(),
-        });
-      } catch (error) {
-        console.error('Error marking machine ready:', error);
-        showNotification('❌ Failed to mark machine ready. Please try again.');
-      }
-    }
-    
-    // Notify waitlist after a short delay to ensure backend processed
-    setTimeout(() => {
-      notifyWaitlist(machineType);
-    }, 100);
   };
 
   const addFounder = (): void => {
@@ -3149,91 +2898,6 @@ const KYWashSystem = () => {
                           </>
                         )}
 
-                        {machine.status === 'pending-collection' && machine.userStudentId === user.studentId && (
-                          <>
-                            <p className={`text-sm mb-3 font-semibold ${
-                              darkMode ? 'text-green-400' : 'text-green-600'
-                            }`}>
-                              Likely Finished! Your clothes are ready for pickup.
-                            </p>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                notifyComingToCollect(machine.id, 'washer');
-                              }}
-                              className={`w-full mt-2 px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
-                              }`}
-                            >
-                              I am coming to collect my clothes
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                clothesCollected(machine.id, 'washer');
-                              }}
-                              className={`w-full mt-2 px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
-                              }`}
-                            >
-                              Clothes Collected
-                            </button>
-                          </>
-                        )}
-
-                        {machine.status === 'running' && (
-                          <>
-                            <p className={`text-xs mb-2 font-semibold ${
-                              darkMode ? 'text-yellow-400' : 'text-yellow-600'
-                            }`}>
-                              No one is using this machine?
-                            </p>
-                            {(machineReportCounts.get(`washer-${machine.id}`) || 0) > 0 && (
-                              <p className={`text-xs mb-2 font-bold px-2 py-1 rounded ${
-                                darkMode ? 'bg-red-900 text-red-300' : 'bg-red-100 text-red-700'
-                              }`}>
-                                ⚠️ Reported: 1 / 1
-                              </p>
-                            )}
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                reportNoOne(machine.id, 'washer');
-                              }}
-                              className={`w-full mt-1 px-2 py-1 rounded text-xs font-semibold transition-colors ${
-                                darkMode ? 'bg-yellow-700 hover:bg-yellow-600 text-white' : 'bg-yellow-500 hover:bg-yellow-600 text-white'
-                              }`}
-                            >
-                              Report No One
-                            </button>
-                          </>
-                        )}
-
-                        {machine.status === 'pending-collection' && machine.userStudentId !== user.studentId && (
-                          <>
-                            <p className={`text-sm mb-3 font-semibold ${
-                              darkMode ? 'text-orange-400' : 'text-orange-600'
-                            }`}>
-                              This washer is likely finished. Report if empty.
-                            </p>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setShowMachineReadyConfirm({
-                                  machineId: machine.id,
-                                  machineType: 'washer',
-                                  fromStudentId: machine.userStudentId || 'unknown'
-                                });
-                              }}
-                              className={`w-full mt-2 px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                darkMode ? 'bg-orange-700 hover:bg-orange-600 text-white' : 'bg-orange-500 hover:bg-orange-600 text-white'
-                              }`}
-                            >
-                              Machine is Done
-                            </button>
-                          </>
-                        )}
-
                         {machine.status === 'available' && !machine.locked && (
                           <>
                             <div className="space-y-2 mb-3">
@@ -3333,91 +2997,6 @@ const KYWashSystem = () => {
                                 Cancel
                               </button>
                             )}
-                          </>
-                        )}
-
-                        {machine.status === 'pending-collection' && machine.userStudentId === user.studentId && (
-                          <>
-                            <p className={`text-sm mb-3 font-semibold ${
-                              darkMode ? 'text-green-400' : 'text-green-600'
-                            }`}>
-                              Likely Finished! Your clothes are ready for pickup.
-                            </p>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                notifyComingToCollect(machine.id, 'dryer');
-                              }}
-                              className={`w-full mt-2 px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
-                              }`}
-                            >
-                              I am coming to collect my clothes
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                clothesCollected(machine.id, 'dryer');
-                              }}
-                              className={`w-full mt-2 px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
-                              }`}
-                            >
-                              Clothes Collected
-                            </button>
-                          </>
-                        )}
-
-                        {machine.status === 'running' && (
-                          <>
-                            <p className={`text-xs mb-2 font-semibold ${
-                              darkMode ? 'text-yellow-400' : 'text-yellow-600'
-                            }`}>
-                              No one is using this machine?
-                            </p>
-                            {(machineReportCounts.get(`dryer-${machine.id}`) || 0) > 0 && (
-                              <p className={`text-xs mb-2 font-bold px-2 py-1 rounded ${
-                                darkMode ? 'bg-red-900 text-red-300' : 'bg-red-100 text-red-700'
-                              }`}>
-                                ⚠️ Reported: 1 / 1
-                              </p>
-                            )}
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                reportNoOne(machine.id, 'dryer');
-                              }}
-                              className={`w-full mt-1 px-2 py-1 rounded text-xs font-semibold transition-colors ${
-                                darkMode ? 'bg-yellow-700 hover:bg-yellow-600 text-white' : 'bg-yellow-500 hover:bg-yellow-600 text-white'
-                              }`}
-                            >
-                              Report No One
-                            </button>
-                          </>
-                        )}
-
-                        {machine.status === 'pending-collection' && machine.userStudentId !== user.studentId && (
-                          <>
-                            <p className={`text-sm mb-3 font-semibold ${
-                              darkMode ? 'text-orange-400' : 'text-orange-600'
-                            }`}>
-                              This dryer is likely finished. Report if empty.
-                            </p>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setShowMachineReadyConfirm({
-                                  machineId: machine.id,
-                                  machineType: 'dryer',
-                                  fromStudentId: machine.userStudentId || 'unknown'
-                                });
-                              }}
-                              className={`w-full mt-2 px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                darkMode ? 'bg-orange-700 hover:bg-orange-600 text-white' : 'bg-orange-500 hover:bg-orange-600 text-white'
-                              }`}
-                            >
-                              Machine is Done
-                            </button>
                           </>
                         )}
 
@@ -3643,34 +3222,8 @@ const KYWashSystem = () => {
                         <div className={`p-4 rounded-lg border-l-4 ${darkMode ? 'bg-gray-700 border-purple-500' : 'bg-purple-50 border-purple-500'}`}>
                           <h3 className={`text-2xl font-bold mb-3 ${darkMode ? 'text-purple-300' : 'text-purple-800'}`}>4. Additional Features</h3>
                           
-                          {/* Report No One Feature */}
-                          <div className="mb-6">
-                            <h4 className={`text-lg font-bold mb-2 ${darkMode ? 'text-purple-400' : 'text-purple-700'}`}>📢 The "Report No One" Feature</h4>
-                            <p className={`mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Use this feature if a washer or dryer is running but appears to be empty:</p>
-                            <ul className={`space-y-2 mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                              <li>✓ Look for the yellow "Report No One" button on running machines.</li>
-                              <li>✓ Select it once to log your first report.</li>
-                              <li>✓ If another user also confirms the machine is empty, select it again (second report).</li>
-                              <li>✓ After 2 reports, the machine timer stops and the machine becomes available for others.</li>
-                              <li>✓ This helps prevent wasted machine cycles and resources.</li>
-                            </ul>
-                          </div>
-                          
-                          {/* Machine is Done Feature */}
-                          <div className="mb-3">
-                            <h4 className={`text-lg font-bold mb-2 ${darkMode ? 'text-purple-400' : 'text-purple-700'}`}>✅ The "Machine is Done" Feature</h4>
-                            <p className={`mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>When a washer or dryer completes its cycle:</p>
-                            <ul className={`space-y-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                              <li>✓ The machine owner will see a notification when the timer finishes.</li>
-                              <li>✓ Other users can select "Machine is Ready" if they see the machine is empty.</li>
-                              <li>✓ When they confirm it's ready, you'll see the machine is now available for others.</li>
-                              <li>✓ After confirmation, you can no longer claim "Clothes Collection" - the machine is unlocked for the next user.</li>
-                              <li>✓ Other waiting users can immediately start using the machine again.</li>
-                            </ul>
-                          </div>
-                          
                           <div className={`p-3 rounded ${darkMode ? 'bg-gray-600' : 'bg-gray-200'}`}>
-                            <p className={`text-sm font-semibold ${darkMode ? 'text-blue-300' : 'text-blue-800'}`}>🤝 Both features rely on community cooperation — please report accurately.</p>
+                            <p className={`text-sm font-semibold ${darkMode ? 'text-blue-300' : 'text-blue-800'}`}>⏱️ All timers count down accurately from the moment you start a machine.</p>
                           </div>
                         </div>
                       </div>
@@ -4464,54 +4017,6 @@ const KYWashSystem = () => {
       )}
 
       {/* Machine is Ready Confirmation Modal */}
-      {showMachineReadyConfirm && (
-        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
-          <div className={`rounded-lg shadow-2xl max-w-md w-full p-8 transition-colors text-center ${
-            darkMode ? 'bg-orange-900' : 'bg-orange-50'
-          }`}>
-            <h2 className={`text-2xl font-bold mb-4 ${
-              darkMode ? 'text-orange-300' : 'text-orange-900'
-            }`}>
-              Is this {showMachineReadyConfirm.machineType} empty and finished?
-            </h2>
-            <p className={`text-lg mb-6 ${
-              darkMode ? 'text-orange-200' : 'text-orange-800'
-            }`}>
-              Confirm if {showMachineReadyConfirm.machineType} #{showMachineReadyConfirm.machineId} is now empty. Other users will be able to start immediately.
-            </p>
-            <div className="space-y-3">
-              <button
-                onClick={() => {
-                  if (showMachineReadyConfirm) {
-                    machineIsReady(
-                      showMachineReadyConfirm.machineId,
-                      showMachineReadyConfirm.machineType,
-                      user?.studentId || 'unknown'
-                    );
-                  }
-                  setShowMachineReadyConfirm(null);
-                }}
-                className={`w-full px-6 py-4 rounded-lg font-bold text-lg transition-colors ${
-                  darkMode ? 'bg-green-700 text-white hover:bg-green-600' : 'bg-green-600 text-white hover:bg-green-700'
-                }`}
-              >
-                ✅ Yes, it's empty
-              </button>
-              <button
-                onClick={() => {
-                  setShowMachineReadyConfirm(null);
-                }}
-                className={`w-full px-6 py-4 rounded-lg font-bold text-lg transition-colors ${
-                  darkMode ? 'bg-red-700 text-white hover:bg-red-600' : 'bg-red-600 text-white hover:bg-red-700'
-                }`}
-              >
-                ❌ No, still in use
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Completion Notification Modal - Rings continuously until user takes action */}
       {showNotificationModal && activeNotification && (
         <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
@@ -4533,28 +4038,6 @@ const KYWashSystem = () => {
             }`}>
               Please come collect your clothes!
             </p>
-            <div className="space-y-3">
-              <button
-                onClick={() => {
-                  notifyComingToCollect(activeNotification.machineId, activeNotification.machineType);
-                }}
-                className={`w-full px-6 py-4 rounded-lg font-bold text-lg transition-colors ${
-                  darkMode ? 'bg-green-700 text-white hover:bg-green-600' : 'bg-green-600 text-white hover:bg-green-700'
-                }`}
-              >
-                ✅ I am coming to collect my clothes
-              </button>
-              <button
-                onClick={() => {
-                  clothesCollected(activeNotification.machineId, activeNotification.machineType);
-                }}
-                className={`w-full px-6 py-4 rounded-lg font-bold text-lg transition-colors ${
-                  darkMode ? 'bg-blue-700 text-white hover:bg-blue-600' : 'bg-blue-600 text-white hover:bg-blue-700'
-                }`}
-              >
-                ✅ Clothes Collected
-              </button>
-            </div>
           </div>
         </div>
       )}
