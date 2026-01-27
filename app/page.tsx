@@ -166,7 +166,7 @@ const KYWashSystem = () => {
   }, []);
 
   const washerModes: Mode[] = [
-    { name: 'Normal', duration: 30 },
+    { name: 'Normal', duration: 1 },
     { name: 'Extra Wash', duration: 40 }
   ];
 
@@ -1086,7 +1086,7 @@ const KYWashSystem = () => {
     setIssueDescription('');
   };
 
-  const reportNoOne = (machineId: number, machineType: 'washer' | 'dryer'): void => {
+  const reportNoOne = async (machineId: number, machineType: 'washer' | 'dryer'): Promise<void> => {
     const machineKey = `${machineType}-${machineId}`;
     const machine = machines.find((m: Machine) => m.id === machineId && m.type === machineType);
 
@@ -1166,15 +1166,20 @@ const KYWashSystem = () => {
     // Show notification
     showNotification(`✅ Machine reported as not in use. Machine ${machineType} #${machineId} is now available for new users.`);
 
-    // SINGLE backend emit - let backend process and respond with authoritative state
+    // SINGLE backend emit - wait for backend to process and respond
     // Backend will update machine state and return it in response
     if (socketRef.current?.emit) {
-      socketRef.current.emit('no-one-report', {
-        machineId: machineId,
-        machineType: machineType,
-        reportedBy: user?.studentId || 'unknown',
-        timestamp: Date.now(),
-      });
+      try {
+        await socketRef.current.emit('no-one-report', {
+          machineId: machineId,
+          machineType: machineType,
+          reportedBy: user?.studentId || 'unknown',
+          timestamp: Date.now(),
+        });
+      } catch (error) {
+        console.error('Error reporting no one:', error);
+        showNotification('❌ Failed to report. Please try again.');
+      }
     }
     
     // Notify waitlist after a short delay to ensure backend processed
@@ -1263,7 +1268,7 @@ const KYWashSystem = () => {
     showNotification(`✅ You notified that you're coming to collect your clothes from ${machineType} ${machineId}.`);
   };
 
-  const machineIsReady = (machineId: number, machineType: 'washer' | 'dryer', reportingStudentId: string): void => {
+  const machineIsReady = async (machineId: number, machineType: 'washer' | 'dryer', reportingStudentId: string): Promise<void> => {
     const machineKey = `${machineType}-${machineId}`;
     const machine = machines.find((m: Machine) => m.id === machineId && m.type === machineType);
 
@@ -1346,15 +1351,20 @@ const KYWashSystem = () => {
     // Show notification
     showNotification(`✅ Clothes collected! Machine ${machineType} #${machineId} is now available for new users.`);
 
-    // SINGLE backend emit - let backend process and respond with authoritative state
+    // SINGLE backend emit - wait for backend to process and respond
     // Backend will update machine state and return it in response
     if (socketRef.current?.emit) {
-      socketRef.current.emit('machine-ready', {
-        machineId: machineId,
-        machineType: machineType,
-        reportingStudentId: reportingStudentId,
-        timestamp: Date.now(),
-      });
+      try {
+        await socketRef.current.emit('machine-ready', {
+          machineId: machineId,
+          machineType: machineType,
+          reportingStudentId: reportingStudentId,
+          timestamp: Date.now(),
+        });
+      } catch (error) {
+        console.error('Error marking machine ready:', error);
+        showNotification('❌ Failed to mark machine ready. Please try again.');
+      }
     }
     
     // Notify waitlist after a short delay to ensure backend processed
