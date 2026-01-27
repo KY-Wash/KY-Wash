@@ -279,11 +279,24 @@ const KYWashSystem = () => {
         if (response.ok) {
           const newState = await response.json();
 
-          // Update machines from API - preserve local timer for running machines
+          // Update machines from API - be smart about not reverting recent state changes
           setMachines((prevMachines) => {
             return newState.machines.map((m: any) => {
               // Find the previous machine state
               const prevMachine = prevMachines.find((pm) => pm.id === parseInt(m.id) && pm.type === m.type);
+              
+              // CRITICAL FIX: Don't allow polling to revert state transitions
+              // If we locally changed to 'available', don't let polling change it back to 'running'
+              if (prevMachine?.status === 'available' && m.status === 'running') {
+                console.warn(`[POLLING PROTECTION] Blocked state revert for ${m.type}-${m.id}: available → running`);
+                return prevMachine; // Keep local available state
+              }
+              
+              // If local status is different from server, trust local state (optimistic update won)
+              if (prevMachine?.status !== m.status && prevMachine?.status === 'available') {
+                console.warn(`[POLLING PROTECTION] Keeping local state for ${m.type}-${m.id}: ${prevMachine.status}`);
+                return prevMachine;
+              }
               
               return {
                 id: parseInt(m.id),
@@ -1075,80 +1088,34 @@ const KYWashSystem = () => {
 
   const reportNoOne = (machineId: number, machineType: 'washer' | 'dryer'): void => {
     const machineKey = `${machineType}-${machineId}`;
-
-    // Update report count in global state (all users will see this)
-    setMachineReportCounts((prev) => {
-      const updated = new Map(prev);
-      updated.set(machineKey, 1); // Mark as reported
-      return updated;
-    });
-
-    // Emit to real-time API for global synchronization
-    if (socketRef.current?.emit) {
-      socketRef.current.emit('no-one-report', {
-        machineId: String(machineId),
-        machineType: machineType,
-        reportedBy: user?.studentId || 'unknown',
-        reportCount: 1,
-        timestamp: Date.now(),
-      });
-    }
-
-    // IMMEDIATE SINGLE-REPORT MACHINE STOP
     const machine = machines.find((m: Machine) => m.id === machineId && m.type === machineType);
-      
-    // CRITICAL: Stop all timers immediately
+
+    // CRITICAL: Stop local timer immediately to prevent freeze
     if (machineTimerRef.current) {
       clearInterval(machineTimerRef.current);
       machineTimerRef.current = null;
     }
 
-    // Reset machine to DEFAULT/AVAILABLE state for all users
+    // Optimistic UI update - make it available immediately
+    // This will be confirmed by backend response
     setMachines((prev: Machine[]) => prev.map((m: Machine) => {
       if (m.id === machineId && m.type === machineType) {
         return { 
           ...m, 
-          status: 'available',           // DEFAULT state
-          timeLeft: 0,                   // Clear remaining time
-          mode: null,                    // Clear mode
-          userStudentId: null,           // Clear user
-          userPhone: null,               // Clear phone
-          originalDuration: undefined,   // Clear duration
-          cancellable: false,            // Not cancellable
-          locked: false                  // Unlock machine
+          status: 'available',
+          timeLeft: 0,
+          mode: null,
+          userStudentId: null,
+          userPhone: null,
+          originalDuration: undefined,
+          cancellable: false,
+          locked: false
         };
       }
       return m;
     }));
 
-    // Clear all active session data for this cycle
-    setUsageHistory((prev: UsageHistory[]) => {
-      return prev.map((record: UsageHistory) => {
-        if (machine && record.machine_id === machineId && 
-            record.type === machineType && 
-            record.studentId === machine.userStudentId &&
-            record.status !== 'Completed') {
-          return { ...record, status: 'Completed' };
-        }
-        return record;
-      });
-    });
-
-    // Update Supabase to reflect completion
-    if (machine && machine.userStudentId) {
-      const usageRecordForMachine = usageHistory.find(
-        (record: UsageHistory) => record.machine_id === machineId && 
-        record.type === machineType && 
-        record.studentId === machine.userStudentId &&
-        record.status !== 'Completed'
-      );
-        
-        if (usageRecordForMachine?.id) {
-          updateUsageRecordStatus(usageRecordForMachine.id, 'Completed');
-        }
-      }
-
-    // Clear all machine metadata
+    // Clear machine metadata optimistically
     const lockedKey = `kyWash-locked-${machineType}-${machineId}`;
     localStorage.removeItem(lockedKey);
     
@@ -1164,28 +1131,56 @@ const KYWashSystem = () => {
       return updated;
     });
 
-    // Reset report count for next cycle
     setMachineReportCounts((prev) => {
       const updated = new Map(prev);
       updated.delete(machineKey);
       return updated;
     });
 
-    // Notify all users globally
-    showNotification(`✅ Machine ${machineType} #${machineId} cycle stopped. Machine now available for new users.`);
-    
-    // Notify waitlist so next user can start
-    notifyWaitlist(machineType);
+    // Clear usage history optimistically
+    if (machine && machine.userStudentId) {
+      setUsageHistory((prev: UsageHistory[]) => {
+        return prev.map((record: UsageHistory) => {
+          if (record.machine_id === machineId && 
+              record.type === machineType && 
+              record.studentId === machine.userStudentId &&
+              record.status !== 'Completed') {
+            return { ...record, status: 'Completed' };
+          }
+          return record;
+        });
+      });
 
-    // Emit global notification event
+      // Update Supabase
+      const usageRecordForMachine = usageHistory.find(
+        (record: UsageHistory) => record.machine_id === machineId && 
+        record.type === machineType && 
+        record.studentId === machine.userStudentId &&
+        record.status !== 'Completed'
+      );
+      if (usageRecordForMachine?.id) {
+        updateUsageRecordStatus(usageRecordForMachine.id, 'Completed');
+      }
+    }
+
+    // Show notification
+    showNotification(`✅ Machine reported as not in use. Machine ${machineType} #${machineId} is now available for new users.`);
+
+    // SINGLE backend emit - let backend process and respond with authoritative state
+    // Backend will update machine state and return it in response
     if (socketRef.current?.emit) {
-      socketRef.current.emit('machine-force-stop', {
-        machineId: String(machineId),
+      socketRef.current.emit('no-one-report', {
+        machineId: machineId,
         machineType: machineType,
-        reason: 'no-one-report',
+        reportedBy: user?.studentId || 'unknown',
         timestamp: Date.now(),
       });
     }
+    
+    // Notify waitlist after a short delay to ensure backend processed
+    setTimeout(() => {
+      notifyWaitlist(machineType);
+    }, 100);
   };
 
   const resolveIssue = (issueId: string): void => {
@@ -1270,8 +1265,6 @@ const KYWashSystem = () => {
 
   const machineIsReady = (machineId: number, machineType: 'washer' | 'dryer', reportingStudentId: string): void => {
     const machineKey = `${machineType}-${machineId}`;
-
-    // Get the machine state before reset
     const machine = machines.find((m: Machine) => m.id === machineId && m.type === machineType);
 
     // CRITICAL: Stop all timers immediately
@@ -1280,40 +1273,40 @@ const KYWashSystem = () => {
       machineTimerRef.current = null;
     }
 
-    // IMMEDIATE state transition to DEFAULT/AVAILABLE for all users
+    // Optimistic UI update - make it available immediately
+    // This will be confirmed by backend response
     setMachines((prev: Machine[]) => prev.map((m: Machine) => {
       if (m.id === machineId && m.type === machineType) {
         return {
           ...m,
-          status: 'available',           // DEFAULT state
-          timeLeft: 0,                   // Ensure no remaining time
-          mode: null,                    // Clear mode
-          userStudentId: null,           // Clear user (for all users)
-          userPhone: null,               // Clear phone (for all users)
-          originalDuration: undefined,   // Clear duration
-          cancellable: false,            // Not cancellable
-          locked: false                  // Unlock machine
+          status: 'available',
+          timeLeft: 0,
+          mode: null,
+          userStudentId: null,
+          userPhone: null,
+          originalDuration: undefined,
+          cancellable: false,
+          locked: false
         };
       }
       return m;
     }));
 
-    // Clear active user session data
-    setUsageHistory((prev: UsageHistory[]) => {
-      return prev.map((record: UsageHistory) => {
-        if (machine && 
-            record.machine_id === machineId && 
-            record.type === machineType && 
-            record.studentId === machine.userStudentId &&
-            record.status !== 'Completed') {
-          return { ...record, status: 'Completed' };
-        }
-        return record;
-      });
-    });
-
-    // Update Supabase to reflect cycle completion
+    // Clear active user session data optimistically
     if (machine && machine.userStudentId) {
+      setUsageHistory((prev: UsageHistory[]) => {
+        return prev.map((record: UsageHistory) => {
+          if (record.machine_id === machineId && 
+              record.type === machineType && 
+              record.studentId === machine.userStudentId &&
+              record.status !== 'Completed') {
+            return { ...record, status: 'Completed' };
+          }
+          return record;
+        });
+      });
+
+      // Update Supabase to reflect cycle completion
       const usageRecordForMachine = usageHistory.find(
         (record: UsageHistory) => 
           record.machine_id === machineId && 
@@ -1350,21 +1343,24 @@ const KYWashSystem = () => {
       return updated;
     });
 
-    // Emit global synchronization event
+    // Show notification
+    showNotification(`✅ Clothes collected! Machine ${machineType} #${machineId} is now available for new users.`);
+
+    // SINGLE backend emit - let backend process and respond with authoritative state
+    // Backend will update machine state and return it in response
     if (socketRef.current?.emit) {
       socketRef.current.emit('machine-ready', {
-        machineId: String(machineId),
+        machineId: machineId,
         machineType: machineType,
         reportingStudentId: reportingStudentId,
-        confirmTime: Date.now(),
+        timestamp: Date.now(),
       });
     }
-
-    // Notify all users (not just the confirmer)
-    showNotification(`✅ Cycle completed & clothes collected. Machine ${machineType} #${machineId} is now available for new users.`);
     
-    // Notify waitlist for this machine type so next user can start
-    notifyWaitlist(machineType);
+    // Notify waitlist after a short delay to ensure backend processed
+    setTimeout(() => {
+      notifyWaitlist(machineType);
+    }, 100);
   };
 
   const addFounder = (): void => {

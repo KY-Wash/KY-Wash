@@ -397,6 +397,101 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           }
           break;
         }
+
+        case 'no-one-report': {
+          // Reset machine immediately when reported as not in use
+          const machine = state.machines.find(
+            (m) => m.id === data.machineId && m.type === data.machineType
+          );
+          if (machine && (machine.status === 'running' || machine.status === 'pending-collection')) {
+            stopServerTimer(String(data.machineId), data.machineType);
+            
+            // Mark usage history as Completed
+            const originalUserId = machine.userStudentId;
+            state.usageHistory = state.usageHistory.map((h) => {
+              if (h.studentId === originalUserId &&
+                  h.machineType === data.machineType &&
+                  h.machineId === data.machineId &&
+                  h.status === 'In Progress') {
+                updateSupabaseRecordStatus(originalUserId, data.machineType, data.machineId, 'Completed');
+                return { ...h, status: 'Completed' };
+              }
+              return h;
+            });
+            
+            // Reset machine to available state
+            machine.status = 'available';
+            machine.timeLeft = 0;
+            machine.mode = '';
+            machine.userStudentId = '';
+            machine.userPhone = '';
+            machine.locked = false;
+          }
+          break;
+        }
+
+        case 'machine-force-stop': {
+          // Identical to 'no-one-report' - force stop and reset machine
+          const machine = state.machines.find(
+            (m) => m.id === data.machineId && m.type === data.machineType
+          );
+          if (machine && (machine.status === 'running' || machine.status === 'pending-collection')) {
+            stopServerTimer(String(data.machineId), data.machineType);
+            
+            const originalUserId = machine.userStudentId;
+            state.usageHistory = state.usageHistory.map((h) => {
+              if (h.studentId === originalUserId &&
+                  h.machineType === data.machineType &&
+                  h.machineId === data.machineId &&
+                  h.status === 'In Progress') {
+                updateSupabaseRecordStatus(originalUserId, data.machineType, data.machineId, 'Completed');
+                return { ...h, status: 'Completed' };
+              }
+              return h;
+            });
+            
+            machine.status = 'available';
+            machine.timeLeft = 0;
+            machine.mode = '';
+            machine.userStudentId = '';
+            machine.userPhone = '';
+            machine.locked = false;
+          }
+          break;
+        }
+
+        case 'machine-ready': {
+          // Machine Done button - user confirmed machine is empty and available
+          const machine = state.machines.find(
+            (m) => m.id === data.machineId && m.type === data.machineType
+          );
+          if (machine) {
+            stopServerTimer(String(data.machineId), data.machineType);
+            
+            const originalUserId = machine.userStudentId;
+            if (originalUserId) {
+              state.usageHistory = state.usageHistory.map((h) => {
+                if (h.studentId === originalUserId &&
+                    h.machineType === data.machineType &&
+                    h.machineId === data.machineId &&
+                    h.status === 'In Progress') {
+                  updateSupabaseRecordStatus(originalUserId, data.machineType, data.machineId, 'Completed');
+                  return { ...h, status: 'Completed' };
+                }
+                return h;
+              });
+            }
+            
+            // Reset machine to available state
+            machine.status = 'available';
+            machine.timeLeft = 0;
+            machine.mode = '';
+            machine.userStudentId = '';
+            machine.userPhone = '';
+            machine.locked = false;
+          }
+          break;
+        }
       }
 
       updateAppState(state);
