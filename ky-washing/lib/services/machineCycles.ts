@@ -1,6 +1,6 @@
 'use client';
 
-import { createClient } from './client';
+import { createClient } from '@/lib/supabase/client';
 import { Database } from '@/types/supabase';
 
 export interface MachineCycleInput {

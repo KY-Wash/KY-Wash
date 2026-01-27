@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -10,6 +10,7 @@ import { useDataCollection } from '@/lib/dataCollection';
 import { machinesService } from '@/lib/services/machines';
 import { machineCyclesService } from '@/lib/services/machineCycles';
 import { notificationsService } from '@/lib/services/notifications';
+import { machineReportsService } from '@/lib/services/machineReports';
 
 interface Machine {
   id: number;
@@ -21,6 +22,14 @@ interface Machine {
   queueCount: number;
   unlockTime?: number;
   currentUserId?: string;
+  noOneReportCount?: number;
+  readyReport?: boolean;
+}
+
+interface MachineTimer {
+  machineId: number;
+  machineType: 'washer' | 'dryer';
+  intervalId: NodeJS.Timeout | null;
 }
 
 export default function MachinesPage() {
@@ -28,10 +37,13 @@ export default function MachinesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [userId, setUserId] = useState<string>('');
+  const [noOneReportCounts, setNoOneReportCounts] = useState<Map<string, number>>(new Map());
+  const [showMachineReadyConfirm, setShowMachineReadyConfirm] = useState<{ machineId: number; machineType: 'washer' | 'dryer' } | null>(null);
   const { trackEvent, setUserId: setDataCollectionUserId } = useDataCollection();
   const autoUnlock = new MachineAutoUnlock();
+  const machineTimersRef = useRef<Map<string, MachineTimer>>(new Map());
 
-  // Load machines from Supabase
+  // Load machines from Supabase and report counts
   useEffect(() => {
     const loadMachines = async () => {
       try {
@@ -46,10 +58,33 @@ export default function MachinesPage() {
             type: m.type,
             status: m.status || 'available',
             timeRemaining: m.estimated_time_remaining || 0,
-            queueCount: 0, // We'll need to fetch queue separately
+            queueCount: 0,
             unlockTime: m.cycle_end_time ? new Date(m.cycle_end_time).getTime() : undefined,
             currentUserId: m.current_user_id,
+            noOneReportCount: 0,
+            readyReport: false,
           }));
+          
+          // Load report counts for each machine
+          for (const machine of machinesData) {
+            const countResult = await machineReportsService.getNoOneReportCount(machine.id, machine.type);
+            if (countResult.success) {
+              const key = `${machine.type}-${machine.id}`;
+              setNoOneReportCounts((prev) => {
+                const updated = new Map(prev);
+                updated.set(key, countResult.count);
+                return updated;
+              });
+              machine.noOneReportCount = countResult.count;
+            }
+
+            // Check for machine ready reports
+            const readyResult = await machineReportsService.getMachineReadyReports(machine.id, machine.type);
+            if (readyResult.success && readyResult.data) {
+              machine.readyReport = true;
+            }
+          }
+          
           setMachines(machinesData);
         }
       } catch (err) {
@@ -61,12 +96,11 @@ export default function MachinesPage() {
     };
 
     loadMachines();
-    // Refresh every 10 seconds
     const interval = setInterval(loadMachines, 10000);
     return () => clearInterval(interval);
   }, []);
 
-  // Timer update
+  // Timer countdown with proper cleanup and auto-unlock on 2 reports
   useEffect(() => {
     const interval = setInterval(() => {
       setMachines((prev) =>
@@ -76,7 +110,6 @@ export default function MachinesPage() {
             
             // Check if cycle just completed
             if (newTime === 0 && machine.timeRemaining > 0) {
-              // Ring notification once
               ringNotification(`${machine.name} cycle completed!`);
               trackEvent('machine_cycle_complete', {
                 machineId: machine.machine_id,
@@ -84,15 +117,12 @@ export default function MachinesPage() {
                 userId: userId,
               });
 
-              // Set auto unlock timer
-              if (machine.unlockTime) {
-                autoUnlock.lockMachine(
-                  machine.id,
-                  machine.type,
-                  15 * 60 * 1000, // 15 minutes
-                  'Cycle completed'
-                );
-              }
+              // Update status to completed instead of in-use
+              return {
+                ...machine,
+                timeRemaining: newTime,
+                status: 'completed',
+              };
             }
             return { ...machine, timeRemaining: newTime };
           }
@@ -102,7 +132,7 @@ export default function MachinesPage() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [trackEvent, userId, autoUnlock]);
+  }, [trackEvent, userId]);
 
   const handleStartMachine = async (machine: Machine) => {
     if (!userId) {
@@ -173,14 +203,33 @@ export default function MachinesPage() {
         }
       }
 
-      // Update local state
+      // Reset machine state back to available
       setMachines((prev) =>
         prev.map((m) =>
           m.id === machine.id
-            ? { ...m, status: 'available', timeRemaining: 0, unlockTime: undefined, currentUserId: undefined }
+            ? { 
+                ...m, 
+                status: 'available', 
+                timeRemaining: 0, 
+                unlockTime: undefined, 
+                currentUserId: undefined,
+                noOneReportCount: 0,
+                readyReport: false,
+              }
             : m
         )
       );
+
+      // Clear any reports for this machine
+      await machineReportsService.clearMachineReports(machine.id, machine.type);
+
+      // Reset report counts
+      const key = `${machine.type}-${machine.id}`;
+      setNoOneReportCounts((prev) => {
+        const updated = new Map(prev);
+        updated.delete(key);
+        return updated;
+      });
 
       autoUnlock.unlockMachine(machine.id, machine.type);
       
@@ -200,6 +249,149 @@ export default function MachinesPage() {
     } catch (err) {
       console.error('Error collecting clothes:', err);
       setError('Failed to collect clothes');
+    }
+  };
+
+  const handleReportNoOne = async (machine: Machine) => {
+    if (!userId) {
+      setError('Please log in first');
+      return;
+    }
+
+    try {
+      const key = `${machine.type}-${machine.id}`;
+      const currentCount = noOneReportCounts.get(key) || 0;
+      const newCount = currentCount + 1;
+
+      // Add report to Supabase
+      const reportResult = await machineReportsService.addNoOneReport(machine.id, machine.type, userId);
+      
+      if (!reportResult.success) {
+        setError('Failed to submit report');
+        return;
+      }
+
+      // Update local state
+      setNoOneReportCounts((prev) => {
+        const updated = new Map(prev);
+        updated.set(key, newCount);
+        return updated;
+      });
+
+      // Track event
+      await trackEvent('no_one_report', {
+        machineId: machine.machine_id,
+        machineType: machine.type,
+        userId: userId,
+        reportCount: newCount,
+      });
+
+      if (newCount === 1) {
+        // First report notification
+        await notificationsService.createNotification({
+          user_id: userId,
+          notification_type: 'no_one_report',
+          title: '⚠️ One Report Logged',
+          message: `One "No One" report for ${machine.name}. One more report will unlock the machine.`,
+          priority: 'high',
+        });
+        alertNotification(`One "No One" report logged. One more will unlock this machine.`);
+      } else if (newCount >= 2) {
+        // Second report - AUTO UNLOCK
+        // Stop the timer immediately
+        setMachines((prev) =>
+          prev.map((m) =>
+            m.id === machine.id && m.type === machine.type
+              ? {
+                  ...m,
+                  status: 'available',
+                  timeRemaining: 0,
+                  currentUserId: undefined,
+                  noOneReportCount: newCount,
+                }
+              : m
+          )
+        );
+
+        // Clear all reports for this machine
+        await machineReportsService.resolveNoOneReports(machine.id, machine.type);
+
+        // Notify all users
+        await notificationsService.createNotification({
+          user_id: userId,
+          notification_type: 'machine_unlocked',
+          title: '✅ Machine Unlocked',
+          message: `${machine.name} has been automatically unlocked after 2 "No One" reports.`,
+          priority: 'high',
+        });
+        
+        ringNotification(`${machine.name} has been unlocked!`);
+      }
+    } catch (err) {
+      console.error('Error reporting no one:', err);
+      setError('Failed to submit report');
+    }
+  };
+
+  const handleMachineReady = async (machineId: number, machineType: 'washer' | 'dryer') => {
+    if (!userId) {
+      setError('Please log in first');
+      return;
+    }
+
+    try {
+      // Add machine ready report
+      const reportResult = await machineReportsService.addMachineReadyReport(machineId, machineType, userId);
+      
+      if (!reportResult.success) {
+        setError('Failed to confirm machine is ready');
+        return;
+      }
+
+      // Reset the machine to available
+      setMachines((prev) =>
+        prev.map((m) =>
+          m.id === machineId && m.type === machineType
+            ? {
+                ...m,
+                status: 'available',
+                timeRemaining: 0,
+                currentUserId: undefined,
+                noOneReportCount: 0,
+                readyReport: false,
+              }
+            : m
+        )
+      );
+
+      // Clear all reports
+      const key = `${machineType}-${machineId}`;
+      setNoOneReportCounts((prev) => {
+        const updated = new Map(prev);
+        updated.delete(key);
+        return updated;
+      });
+
+      // Track event
+      await trackEvent('machine_ready_confirmed', {
+        machineId,
+        machineType,
+        userId,
+      });
+
+      // Notify that machine is now available
+      await notificationsService.createNotification({
+        user_id: userId,
+        notification_type: 'machine_ready',
+        title: '✅ Machine Reset',
+        message: `${machineType.charAt(0).toUpperCase() + machineType.slice(1)} #${machineId} is now available for the next user.`,
+        priority: 'normal',
+      });
+
+      setShowMachineReadyConfirm(null);
+    } catch (err) {
+      console.error('Error confirming machine ready:', err);
+      setError('Failed to confirm machine is ready');
     }
   };
 
@@ -288,37 +480,86 @@ export default function MachinesPage() {
                   <Badge variant="outline">{machine.queueCount} waiting</Badge>
                 </div>
 
-                <div className="flex gap-2 mt-4">
+                <div className="flex gap-2 mt-4 flex-col space-y-2">
                   {machine.status === 'available' && (
                     <Button
-                      className="flex-1"
+                      className="w-full"
                       onClick={() => handleStartMachine(machine)}
                     >
                       Start Machine
                     </Button>
                   )}
-                  {machine.status === 'completed' && (
+                  {machine.status === 'in-use' && (
+                    <>
+                      <Button variant="outline" disabled className="w-full">
+                        ⏱️ In Use - {formatTime(machine.timeRemaining)}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="w-full bg-yellow-50 hover:bg-yellow-100 border-yellow-300"
+                        onClick={() => handleReportNoOne(machine)}
+                      >
+                        ⚠️ Report No One ({(noOneReportCounts.get(`${machine.type}-${machine.id}`) || 0)}/2)
+                      </Button>
+                    </>
+                  )}
+                  {machine.status === 'completed' && machine.currentUserId === userId && (
                     <Button
-                      className="flex-1 bg-green-600 hover:bg-green-700"
+                      className="w-full bg-green-600 hover:bg-green-700"
                       onClick={() => handleCollectClothes(machine)}
                     >
-                      Collect Clothes
+                      ✅ Collect Your Clothes
                     </Button>
                   )}
-                  {machine.status === 'in-use' && (
-                    <Button variant="outline" disabled className="flex-1">
-                      In Use
+                  {machine.status === 'completed' && machine.currentUserId !== userId && (
+                    <Button
+                      className="w-full bg-blue-600 hover:bg-blue-700"
+                      onClick={() => setShowMachineReadyConfirm({ machineId: machine.id, machineType: machine.type })}
+                    >
+                      📦 Machine is Ready (Help Reset)
                     </Button>
                   )}
                   {(machine.status === 'maintenance' || machine.status === 'offline') && (
-                    <Button variant="outline" disabled className="flex-1">
-                      {machine.status === 'maintenance' ? 'Under Maintenance' : 'Offline'}
+                    <Button variant="outline" disabled className="w-full">
+                      {machine.status === 'maintenance' ? '🔧 Under Maintenance' : '❌ Offline'}
                     </Button>
                   )}
                 </div>
               </CardContent>
             </Card>
           ))}
+        </div>
+      )}
+
+      {/* Machine Ready Confirmation Modal */}
+      {showMachineReadyConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <Card className="max-w-md w-full">
+            <CardHeader>
+              <CardTitle className="text-lg">Confirm Machine is Ready</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-gray-600">
+                This will reset {showMachineReadyConfirm.machineType} #{showMachineReadyConfirm.machineId} to available so the next user can start. 
+                Only confirm if the machine is truly empty.
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  className="flex-1 bg-green-600 hover:bg-green-700"
+                  onClick={() => handleMachineReady(showMachineReadyConfirm.machineId, showMachineReadyConfirm.machineType)}
+                >
+                  ✅ Yes, Reset It
+                </Button>
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  onClick={() => setShowMachineReadyConfirm(null)}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       )}
     </div>
