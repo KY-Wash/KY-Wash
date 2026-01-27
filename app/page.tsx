@@ -1075,13 +1075,11 @@ const KYWashSystem = () => {
 
   const reportNoOne = (machineId: number, machineType: 'washer' | 'dryer'): void => {
     const machineKey = `${machineType}-${machineId}`;
-    const currentCount = Math.max(0, machineReportCounts.get(machineKey) || 0); // Error handling: ensure non-negative
-    const newCount = currentCount + 1;
 
     // Update report count in global state (all users will see this)
     setMachineReportCounts((prev) => {
       const updated = new Map(prev);
-      updated.set(machineKey, newCount);
+      updated.set(machineKey, 1); // Mark as reported
       return updated;
     });
 
@@ -1091,107 +1089,102 @@ const KYWashSystem = () => {
         machineId: String(machineId),
         machineType: machineType,
         reportedBy: user?.studentId || 'unknown',
-        reportCount: newCount,
+        reportCount: 1,
         timestamp: Date.now(),
       });
     }
 
-    if (newCount === 1) {
-      // First report - just notify
-      showNotification('⚠️ One "No One" report logged. One more report will stop the timer and unlock this machine.');
-    } else if (newCount >= 2) {
-      // Second report - IMMEDIATE MACHINE STOP
-      const machine = machines.find((m: Machine) => m.id === machineId && m.type === machineType);
+    // IMMEDIATE SINGLE-REPORT MACHINE STOP
+    const machine = machines.find((m: Machine) => m.id === machineId && m.type === machineType);
       
-      // CRITICAL: Stop all timers immediately
-      if (machineTimerRef.current) {
-        clearInterval(machineTimerRef.current);
-        machineTimerRef.current = null;
+    // CRITICAL: Stop all timers immediately
+    if (machineTimerRef.current) {
+      clearInterval(machineTimerRef.current);
+      machineTimerRef.current = null;
+    }
+
+    // Reset machine to DEFAULT/AVAILABLE state for all users
+    setMachines((prev: Machine[]) => prev.map((m: Machine) => {
+      if (m.id === machineId && m.type === machineType) {
+        return { 
+          ...m, 
+          status: 'available',           // DEFAULT state
+          timeLeft: 0,                   // Clear remaining time
+          mode: null,                    // Clear mode
+          userStudentId: null,           // Clear user
+          userPhone: null,               // Clear phone
+          originalDuration: undefined,   // Clear duration
+          cancellable: false,            // Not cancellable
+          locked: false                  // Unlock machine
+        };
       }
+      return m;
+    }));
 
-      // Reset machine to DEFAULT/AVAILABLE state for all users
-      setMachines((prev: Machine[]) => prev.map((m: Machine) => {
-        if (m.id === machineId && m.type === machineType) {
-          return { 
-            ...m, 
-            status: 'available',           // DEFAULT state
-            timeLeft: 0,                   // Clear remaining time
-            mode: null,                    // Clear mode
-            userStudentId: null,           // Clear user
-            userPhone: null,               // Clear phone
-            originalDuration: undefined,   // Clear duration
-            cancellable: false,            // Not cancellable
-            locked: false                  // Unlock machine
-          };
+    // Clear all active session data for this cycle
+    setUsageHistory((prev: UsageHistory[]) => {
+      return prev.map((record: UsageHistory) => {
+        if (machine && record.machine_id === machineId && 
+            record.type === machineType && 
+            record.studentId === machine.userStudentId &&
+            record.status !== 'Completed') {
+          return { ...record, status: 'Completed' };
         }
-        return m;
-      }));
-
-      // Clear all active session data for this cycle
-      setUsageHistory((prev: UsageHistory[]) => {
-        return prev.map((record: UsageHistory) => {
-          if (machine && record.machine_id === machineId && 
-              record.type === machineType && 
-              record.studentId === machine.userStudentId &&
-              record.status !== 'Completed') {
-            return { ...record, status: 'Completed' };
-          }
-          return record;
-        });
+        return record;
       });
+    });
 
-      // Update Supabase to reflect completion
-      if (machine && machine.userStudentId) {
-        const usageRecordForMachine = usageHistory.find(
-          (record: UsageHistory) => record.machine_id === machineId && 
-          record.type === machineType && 
-          record.studentId === machine.userStudentId &&
-          record.status !== 'Completed'
-        );
+    // Update Supabase to reflect completion
+    if (machine && machine.userStudentId) {
+      const usageRecordForMachine = usageHistory.find(
+        (record: UsageHistory) => record.machine_id === machineId && 
+        record.type === machineType && 
+        record.studentId === machine.userStudentId &&
+        record.status !== 'Completed'
+      );
         
         if (usageRecordForMachine?.id) {
           updateUsageRecordStatus(usageRecordForMachine.id, 'Completed');
         }
       }
 
-      // Clear all machine metadata
-      const lockedKey = `kyWash-locked-${machineType}-${machineId}`;
-      localStorage.removeItem(lockedKey);
-      
-      setLockedMachines((prev) => {
-        const updated = new Map(prev);
-        updated.delete(machineKey);
-        return updated;
-      });
-      
-      setMachineReadyStates((prev) => {
-        const updated = new Map(prev);
-        updated.delete(machineKey);
-        return updated;
-      });
+    // Clear all machine metadata
+    const lockedKey = `kyWash-locked-${machineType}-${machineId}`;
+    localStorage.removeItem(lockedKey);
+    
+    setLockedMachines((prev) => {
+      const updated = new Map(prev);
+      updated.delete(machineKey);
+      return updated;
+    });
+    
+    setMachineReadyStates((prev) => {
+      const updated = new Map(prev);
+      updated.delete(machineKey);
+      return updated;
+    });
 
-      // Reset report count for next cycle
-      setMachineReportCounts((prev) => {
-        const updated = new Map(prev);
-        updated.delete(machineKey);
-        return updated;
+    // Reset report count for next cycle
+    setMachineReportCounts((prev) => {
+      const updated = new Map(prev);
+      updated.delete(machineKey);
+      return updated;
+    });
+
+    // Notify all users globally
+    showNotification(`✅ Machine ${machineType} #${machineId} cycle stopped. Machine now available for new users.`);
+    
+    // Notify waitlist so next user can start
+    notifyWaitlist(machineType);
+
+    // Emit global notification event
+    if (socketRef.current?.emit) {
+      socketRef.current.emit('machine-force-stop', {
+        machineId: String(machineId),
+        machineType: machineType,
+        reason: 'no-one-report',
+        timestamp: Date.now(),
       });
-
-      // Notify all users globally
-      showNotification(`✅ Machine ${machineType} #${machineId} cycle completed & stopped. Machine now available for new users.`);
-      
-      // Notify waitlist so next user can start
-      notifyWaitlist(machineType);
-
-      // Emit global notification event
-      if (socketRef.current?.emit) {
-        socketRef.current.emit('machine-force-stop', {
-          machineId: String(machineId),
-          machineType: machineType,
-          reason: 'two-no-one-reports',
-          timestamp: Date.now(),
-        });
-      }
     }
   };
 
@@ -3193,7 +3186,7 @@ const KYWashSystem = () => {
                               <p className={`text-xs mb-2 font-bold px-2 py-1 rounded ${
                                 darkMode ? 'bg-red-900 text-red-300' : 'bg-red-100 text-red-700'
                               }`}>
-                                ⚠️ Reports: {machineReportCounts.get(`washer-${machine.id}`) || 0} / 2
+                                ⚠️ Reported: 1 / 1
                               </p>
                             )}
                             <button
@@ -3380,7 +3373,7 @@ const KYWashSystem = () => {
                               <p className={`text-xs mb-2 font-bold px-2 py-1 rounded ${
                                 darkMode ? 'bg-red-900 text-red-300' : 'bg-red-100 text-red-700'
                               }`}>
-                                ⚠️ Reports: {machineReportCounts.get(`dryer-${machine.id}`) || 0} / 2
+                                ⚠️ Reported: 1 / 1
                               </p>
                             )}
                             <button
