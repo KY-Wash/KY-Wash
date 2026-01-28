@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Waves, Loader2, Clock, Users, AlertCircle, LogOut, Settings, ChevronDown, ChevronUp, Lock, Unlock, History, TrendingUp, X, Edit2, BarChart3, Trash2 } from 'lucide-react';
 import { insertUsageRecord, updateUsageRecordStatus } from '@/lib/supabase';
 
+
 interface User {
   studentId: string;
   phoneNumber: string;
@@ -4161,4 +4162,22 @@ const KYWashSystem = () => {
   );
 };
 
-export default KYWashSystem;
+import { cookies } from 'next/headers'
+import { createClient } from '@/utils/supabase/server'
+
+export default async function Page() {
+  const cookieStore = await cookies()
+  const supabase = createClient(cookieStore)
+
+  const { data: students } = await supabase.from('students').select()
+
+  return (
+    <ul>
+      {students?.map((student:any) => (
+        <li key={student.id}>
+          {student.student_id} - {student.phone_number}
+        </li>
+      ))}
+    </ul>
+  )
+}
