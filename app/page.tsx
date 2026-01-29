@@ -1016,26 +1016,7 @@ const KYWashSystem = () => {
     const machineKey = `${machineType}-${machineId}`;
     
     if (status === 'coming') {
-      // User is coming to collect - set status to 'coming' and notify other users
-      setMachineCollectionStatus((prev) => {
-        const updated = new Map(prev);
-        updated.set(machineKey, { status: 'coming', user: user.studentId });
-        return updated;
-      });
-
-      // Emit to real-time API
-      if (socketRef.current?.emit) {
-        socketRef.current.emit('machine-collection-status', {
-          machineId: String(machineId),
-          machineType: machineType,
-          status: 'coming',
-          studentId: user.studentId,
-        });
-      }
-
-      showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId}: User ${user.studentId} is coming to collect clothes!`);
-    } else if (status === 'collected') {
-      // Clothes collected - make machine fully reset and available for new cycle
+      // User is coming to collect - automatically reset the machine and make it available
       // Clear all machine data to allow other users to start fresh
       setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
         machine.id === machineId && machine.type === machineType
@@ -1060,14 +1041,14 @@ const KYWashSystem = () => {
       });
 
       // Log audit event for clothes collected
-      logAuditEvent('clothes-collected', machineType, machineId, 'User collected clothes from machine');
+      logAuditEvent('clothes-collected', machineType, machineId, 'User marked as coming to collect clothes');
 
       // Emit to real-time API
       if (socketRef.current?.emit) {
         socketRef.current.emit('machine-collection-status', {
           machineId: String(machineId),
           machineType: machineType,
-          status: 'collected',
+          status: 'coming',
           studentId: user.studentId,
         });
       }
@@ -3051,20 +3032,6 @@ const KYWashSystem = () => {
                           </div>
                           <div className="flex gap-2">
                             {machine.locked && <Lock className={`w-5 h-5 ${darkMode ? 'text-red-400' : 'text-red-500'}`} />}
-                            {machine.status === 'running' && machine.userStudentId === user?.studentId && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  cancelMachine(machine.id, 'washer');
-                                }}
-                                className={`p-1 rounded transition-colors ${
-                                  darkMode ? 'bg-red-700 hover:bg-red-600 text-white' : 'bg-red-500 hover:bg-red-600 text-white'
-                                }`}
-                                title="Cancel washing cycle"
-                              >
-                                <X className="w-5 h-5" />
-                              </button>
-                            )}
                           </div>
                         </div>
 
@@ -3076,6 +3043,20 @@ const KYWashSystem = () => {
                             <p className={`text-2xl font-bold text-center py-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
                               {formatTime(machine.timeLeft)}
                             </p>
+                            {machine.userStudentId === user?.studentId && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  cancelMachine(machine.id, 'washer');
+                                }}
+                                className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors mt-2 ${
+                                  darkMode ? 'bg-red-700 hover:bg-red-600 text-white' : 'bg-red-500 hover:bg-red-600 text-white'
+                                }`}
+                                title="Cancel washing cycle"
+                              >
+                                Cancel
+                              </button>
+                            )}
                             {machine.userStudentId !== user?.studentId && (
                               <button
                                 onClick={(e) => {
@@ -3098,30 +3079,17 @@ const KYWashSystem = () => {
                             <p className={`text-lg font-bold mb-4 text-center ${darkMode ? 'text-orange-300' : 'text-orange-700'}`}>
                               🔔 Cycle Complete!
                             </p>
-                            <div className="space-y-2">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleMachineCollectionStatus(machine.id, 'washer', 'coming');
-                                }}
-                                className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                  darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
-                                }`}
-                              >
-                                On my way!
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleMachineCollectionStatus(machine.id, 'washer', 'collected');
-                                }}
-                                className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                  darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
-                                }`}
-                              >
-                                Clothes collected
-                              </button>
-                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMachineCollectionStatus(machine.id, 'washer', 'coming');
+                              }}
+                              className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
+                              }`}
+                            >
+                              On my way!
+                            </button>
                           </>
                         )}
 
@@ -3235,20 +3203,6 @@ const KYWashSystem = () => {
                           </div>
                           <div className="flex gap-2">
                             {machine.locked && <Lock className={`w-5 h-5 ${darkMode ? 'text-red-400' : 'text-red-500'}`} />}
-                            {machine.status === 'running' && machine.userStudentId === user?.studentId && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  cancelMachine(machine.id, 'dryer');
-                                }}
-                                className={`p-1 rounded transition-colors ${
-                                  darkMode ? 'bg-red-700 hover:bg-red-600 text-white' : 'bg-red-500 hover:bg-red-600 text-white'
-                                }`}
-                                title="Cancel drying cycle"
-                              >
-                                <X className="w-5 h-5" />
-                              </button>
-                            )}
                           </div>
                         </div>
 
@@ -3260,6 +3214,20 @@ const KYWashSystem = () => {
                             <p className={`text-2xl font-bold text-center py-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
                               {formatTime(machine.timeLeft)}
                             </p>
+                            {machine.userStudentId === user?.studentId && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  cancelMachine(machine.id, 'dryer');
+                                }}
+                                className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors mt-2 ${
+                                  darkMode ? 'bg-red-700 hover:bg-red-600 text-white' : 'bg-red-500 hover:bg-red-600 text-white'
+                                }`}
+                                title="Cancel drying cycle"
+                              >
+                                Cancel
+                              </button>
+                            )}
                             {machine.userStudentId !== user?.studentId && (
                               <button
                                 onClick={(e) => {
@@ -3282,30 +3250,17 @@ const KYWashSystem = () => {
                             <p className={`text-lg font-bold mb-4 text-center ${darkMode ? 'text-orange-300' : 'text-orange-700'}`}>
                               🔔 Cycle Complete!
                             </p>
-                            <div className="space-y-2">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleMachineCollectionStatus(machine.id, 'dryer', 'coming');
-                                }}
-                                className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                  darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
-                                }`}
-                              >
-                                On my way!
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleMachineCollectionStatus(machine.id, 'dryer', 'collected');
-                                }}
-                                className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                  darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
-                                }`}
-                              >
-                                Clothes collected
-                              </button>
-                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMachineCollectionStatus(machine.id, 'dryer', 'coming');
+                              }}
+                              className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
+                              }`}
+                            >
+                              On my way!
+                            </button>
                           </>
                         )}
 
