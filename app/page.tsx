@@ -4,9 +4,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Waves, Loader2, Clock, Users, AlertCircle, LogOut, Settings, ChevronDown, ChevronUp, Lock, Unlock, History, TrendingUp, X, Edit2, BarChart3, Trash2 } from 'lucide-react';
 import { insertUsageRecord, updateUsageRecordStatus } from '@/lib/supabase';
 
-import { createClient } from '@/utils/supabase/server'
-import { cookies } from 'next/headers'
-
 interface User {
   studentId: string;
   phoneNumber: string;
@@ -978,10 +975,21 @@ const KYWashSystem = () => {
 
       showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId}: User ${user.studentId} is coming to collect clothes!`);
     } else if (status === 'collected') {
-      // Clothes collected - make machine available and clear collection status
+      // Clothes collected - make machine fully reset and available for new cycle
+      // Clear all machine data to allow other users to start fresh
       setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
         machine.id === machineId && machine.type === machineType
-          ? { ...machine, status: 'available', timeLeft: 0, mode: null, userStudentId: null, userPhone: null, originalDuration: undefined, collectionStatus: null }
+          ? { 
+              ...machine, 
+              status: 'available', 
+              timeLeft: 0, 
+              mode: null, 
+              userStudentId: null, 
+              userPhone: null, 
+              originalDuration: undefined, 
+              collectionStatus: null,
+              locked: false  // Ensure machine is not locked
+            }
           : machine
       ));
 
@@ -1003,6 +1011,53 @@ const KYWashSystem = () => {
 
       showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} is now available for other users!`);
     }
+  };
+
+  const cancelMachineByOtherUser = (machineId: number, machineType: 'washer' | 'dryer'): void => {
+    if (!user) return;
+
+    // Verification: Ask user to confirm they want to cancel an empty washer
+    const isConfirmed = window.confirm(
+      `Are you sure you want to cancel the ${machineType} #${machineId} because the washer is empty? This action will allow other users to use the machine again.`
+    );
+
+    if (!isConfirmed) {
+      return;
+    }
+
+    // Emit to real-time API
+    if (socketRef.current?.emit) {
+      socketRef.current.emit('machine-cancel-by-other', {
+        machineId: String(machineId),
+        machineType: machineType,
+        studentId: user.studentId,
+      });
+    }
+
+    setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
+      machine.id === machineId && machine.type === machineType
+        ? { 
+            ...machine, 
+            status: 'available', 
+            timeLeft: 0, 
+            mode: null, 
+            userStudentId: null, 
+            userPhone: null, 
+            originalDuration: undefined, 
+            collectionStatus: null,
+            locked: false
+          }
+        : machine
+    ));
+
+    const machineKey = `${machineType}-${machineId}`;
+    setMachineCollectionStatus((prev) => {
+      const updated = new Map(prev);
+      updated.delete(machineKey);
+      return updated;
+    });
+
+    showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} cycle cancelled by user ${user.studentId}. Machine is now available.`);
   };
 
   const joinWaitlist = (type: string): void => {
@@ -2989,11 +3044,33 @@ const KYWashSystem = () => {
                           </>
                         )}
 
-                        {machine.status === 'pending-collection' && machine.userStudentId !== user?.studentId && machineCollectionStatus.get(`washer-${machine.id}`) && (
+                        {machine.status === 'pending-collection' && machine.userStudentId !== user?.studentId && (
                           <>
-                            <p className={`text-sm font-semibold p-2 rounded text-center ${darkMode ? 'bg-blue-900 text-blue-200' : 'bg-blue-100 text-blue-900'}`}>
-                              ℹ️ User {machineCollectionStatus.get(`washer-${machine.id}`)?.user} is coming to collect clothes
-                            </p>
+                            {machineCollectionStatus.get(`washer-${machine.id}`) && (
+                              <p className={`text-sm font-semibold p-2 rounded text-center ${darkMode ? 'bg-blue-900 text-blue-200' : 'bg-blue-100 text-blue-900'}`}>
+                                ℹ️ User {machineCollectionStatus.get(`washer-${machine.id}`)?.user} is coming to collect clothes
+                              </p>
+                            )}
+                            {!machineCollectionStatus.get(`washer-${machine.id}`) && (
+                              <div className="flex flex-col gap-2">
+                                <p className={`text-sm font-semibold p-2 rounded text-center ${darkMode ? 'bg-orange-900 text-orange-200' : 'bg-orange-100 text-orange-900'}`}>
+                                  ⚠️ Washer appears to be empty and idle
+                                </p>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    cancelMachineByOtherUser(machine.id, 'washer');
+                                  }}
+                                  className={`p-2 rounded transition-colors font-semibold flex items-center justify-center gap-2 ${
+                                    darkMode ? 'bg-red-700 hover:bg-red-600 text-white' : 'bg-red-500 hover:bg-red-600 text-white'
+                                  }`}
+                                  title="Cancel this cycle if the washer is empty"
+                                >
+                                  <X className="w-5 h-5" />
+                                  Cancel Empty Cycle
+                                </button>
+                              </div>
+                            )}
                           </>
                         )}
 
@@ -3137,11 +3214,33 @@ const KYWashSystem = () => {
                           </>
                         )}
 
-                        {machine.status === 'pending-collection' && machine.userStudentId !== user?.studentId && machineCollectionStatus.get(`dryer-${machine.id}`) && (
+                        {machine.status === 'pending-collection' && machine.userStudentId !== user?.studentId && (
                           <>
-                            <p className={`text-sm font-semibold p-2 rounded text-center ${darkMode ? 'bg-blue-900 text-blue-200' : 'bg-blue-100 text-blue-900'}`}>
-                              ℹ️ User {machineCollectionStatus.get(`dryer-${machine.id}`)?.user} is coming to collect clothes
-                            </p>
+                            {machineCollectionStatus.get(`dryer-${machine.id}`) && (
+                              <p className={`text-sm font-semibold p-2 rounded text-center ${darkMode ? 'bg-blue-900 text-blue-200' : 'bg-blue-100 text-blue-900'}`}>
+                                ℹ️ User {machineCollectionStatus.get(`dryer-${machine.id}`)?.user} is coming to collect clothes
+                              </p>
+                            )}
+                            {!machineCollectionStatus.get(`dryer-${machine.id}`) && (
+                              <div className="flex flex-col gap-2">
+                                <p className={`text-sm font-semibold p-2 rounded text-center ${darkMode ? 'bg-orange-900 text-orange-200' : 'bg-orange-100 text-orange-900'}`}>
+                                  ⚠️ Dryer appears to be empty and idle
+                                </p>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    cancelMachineByOtherUser(machine.id, 'dryer');
+                                  }}
+                                  className={`p-2 rounded transition-colors font-semibold flex items-center justify-center gap-2 ${
+                                    darkMode ? 'bg-red-700 hover:bg-red-600 text-white' : 'bg-red-500 hover:bg-red-600 text-white'
+                                  }`}
+                                  title="Cancel this cycle if the dryer is empty"
+                                >
+                                  <X className="w-5 h-5" />
+                                  Cancel Empty Cycle
+                                </button>
+                              </div>
+                            )}
                           </>
                         )}
 
