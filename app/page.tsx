@@ -13,7 +13,7 @@ interface User {
 interface Machine {
   id: number;
   type: 'washer' | 'dryer';
-  status: 'available' | 'running' | 'maintenance';
+  status: 'available' | 'running' | 'maintenance' | 'pending-collection';
   timeLeft: number;
   mode: string | null;
   locked: boolean;
@@ -403,16 +403,7 @@ const KYWashSystem = () => {
                   studentId: machine.userStudentId,
                 });
               }
-              // Reset machine to available state immediately
-              return { 
-                ...machine, 
-                timeLeft: 0, 
-                status: 'available',
-                userStudentId: null,
-                userPhone: null,
-                mode: null,
-                originalDuration: undefined
-              };
+              return { ...machine, timeLeft: 0, status: 'pending-collection' };
             }
             
             return { ...machine, timeLeft: newTimeLeft };
@@ -649,6 +640,17 @@ const KYWashSystem = () => {
           reminderSentRef.current.add(machineKey);
           playNotificationSound();
           showNotification(`⏰ REMINDER: Your ${machine.type} ${machine.id} will be done in 5 minutes!`);
+        }
+      }
+      
+      // Check if machine just completed (transitioned to pending-collection)
+      // Only send to user who used this machine
+      if (machine.status === 'pending-collection' && !notifiedMachinesRef.current.has(machineKey)) {
+        if (machine.userStudentId === user?.studentId) {
+          notifiedMachinesRef.current.add(machineKey);
+          playNotificationSound();
+          startContinuousNotificationRing();
+          showNotification(`🔔 ${machine.type.charAt(0).toUpperCase() + machine.type.slice(1)} ${machine.id} is complete! Please collect your clothes.`);
         }
       }
       
@@ -1047,6 +1049,45 @@ const KYWashSystem = () => {
           machineId: String(machineId),
           machineType: machineType,
           status: 'coming',
+          studentId: user.studentId,
+        });
+      }
+
+      showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} is now available for other users!`);
+    } else if (status === 'collected') {
+      // Clothes collected - make machine fully reset and available for new cycle
+      // Clear all machine data to allow other users to start fresh
+      setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
+        machine.id === machineId && machine.type === machineType
+          ? { 
+              ...machine, 
+              status: 'available', 
+              timeLeft: 0, 
+              mode: null, 
+              userStudentId: null, 
+              userPhone: null, 
+              originalDuration: undefined, 
+              collectionStatus: null,
+              locked: false  // Ensure machine is not locked
+            }
+          : machine
+      ));
+
+      setMachineCollectionStatus((prev) => {
+        const updated = new Map(prev);
+        updated.delete(machineKey);
+        return updated;
+      });
+
+      // Log audit event for clothes collected
+      logAuditEvent('clothes-collected', machineType, machineId, 'User collected clothes from machine');
+
+      // Emit to real-time API
+      if (socketRef.current?.emit) {
+        socketRef.current.emit('machine-collection-status', {
+          machineId: String(machineId),
+          machineType: machineType,
+          status: 'collected',
           studentId: user.studentId,
         });
       }
@@ -3010,6 +3051,8 @@ const KYWashSystem = () => {
                             ? darkMode ? 'border-red-600 bg-red-900 opacity-60' : 'border-red-500 bg-red-50 opacity-60'
                             : machine.status === 'available'
                             ? darkMode ? 'border-green-600 bg-green-900 hover:shadow-lg' : 'border-green-500 bg-green-50 hover:shadow-lg'
+                            : machine.status === 'pending-collection'
+                            ? darkMode ? 'border-orange-600 bg-orange-900 animate-pulse' : 'border-orange-500 bg-orange-50 animate-pulse'
                             : darkMode ? 'border-yellow-600 bg-yellow-900' : 'border-yellow-500 bg-yellow-50'
                         }`}
                         onClick={() => !machine.locked && machine.status === 'available' && setSelectedMachine(machine)}
@@ -3020,9 +3063,10 @@ const KYWashSystem = () => {
                             <p className={`text-sm font-semibold capitalize ${
                               machine.locked ? darkMode ? 'text-red-400' : 'text-red-600' :
                               machine.status === 'available' ? darkMode ? 'text-green-400' : 'text-green-600' :
-                              machine.status === 'running' ? darkMode ? 'text-yellow-400' : 'text-yellow-600' : darkMode ? 'text-red-400' : 'text-red-600'
+                              machine.status === 'running' ? darkMode ? 'text-yellow-400' : 'text-yellow-600' :
+                              machine.status === 'pending-collection' ? darkMode ? 'text-orange-400' : 'text-orange-600' : darkMode ? 'text-red-400' : 'text-red-600'
                             }`}>
-                              {machine.locked ? 'NOT AVAILABLE' : machine.status}
+                              {machine.locked ? 'NOT AVAILABLE' : machine.status === 'pending-collection' ? 'COMPLETE - AWAITING COLLECTION' : machine.status}
                             </p>
                           </div>
                           <div className="flex gap-2">
@@ -3055,7 +3099,24 @@ const KYWashSystem = () => {
                           </>
                         )}
 
-
+                        {machine.status === 'pending-collection' && machine.userStudentId === user?.studentId && (
+                          <>
+                            <p className={`text-lg font-bold mb-4 text-center ${darkMode ? 'text-orange-300' : 'text-orange-700'}`}>
+                              🔔 Cycle Complete!
+                            </p>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMachineCollectionStatus(machine.id, 'washer', 'collected');
+                              }}
+                              className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
+                              }`}
+                            >
+                              Clothes collected
+                            </button>
+                          </>
+                        )}
 
                         {machine.status === 'available' && !machine.locked && (
                           <>
@@ -3117,6 +3178,8 @@ const KYWashSystem = () => {
                             ? darkMode ? 'border-red-600 bg-red-900 opacity-60' : 'border-red-500 bg-red-50 opacity-60'
                             : machine.status === 'available'
                             ? darkMode ? 'border-green-600 bg-green-900 hover:shadow-lg' : 'border-green-500 bg-green-50 hover:shadow-lg'
+                            : machine.status === 'pending-collection'
+                            ? darkMode ? 'border-orange-600 bg-orange-900 animate-pulse' : 'border-orange-500 bg-orange-50 animate-pulse'
                             : darkMode ? 'border-yellow-600 bg-yellow-900' : 'border-yellow-500 bg-yellow-50'
                         }`}
                         onClick={() => !machine.locked && machine.status === 'available' && setSelectedMachine(machine)}
@@ -3127,9 +3190,10 @@ const KYWashSystem = () => {
                             <p className={`text-sm font-semibold capitalize ${
                               machine.locked ? darkMode ? 'text-red-400' : 'text-red-600' :
                               machine.status === 'available' ? darkMode ? 'text-green-400' : 'text-green-600' :
-                              machine.status === 'running' ? darkMode ? 'text-yellow-400' : 'text-yellow-600' : darkMode ? 'text-red-400' : 'text-red-600'
+                              machine.status === 'running' ? darkMode ? 'text-yellow-400' : 'text-yellow-600' :
+                              machine.status === 'pending-collection' ? darkMode ? 'text-orange-400' : 'text-orange-600' : darkMode ? 'text-red-400' : 'text-red-600'
                             }`}>
-                              {machine.locked ? 'NOT AVAILABLE' : machine.status}
+                              {machine.locked ? 'NOT AVAILABLE' : machine.status === 'pending-collection' ? 'COMPLETE - AWAITING COLLECTION' : machine.status}
                             </p>
                           </div>
                           <div className="flex gap-2">
@@ -3159,6 +3223,25 @@ const KYWashSystem = () => {
                                 Cancel
                               </button>
                             )}
+                          </>
+                        )}
+
+                        {machine.status === 'pending-collection' && machine.userStudentId === user?.studentId && (
+                          <>
+                            <p className={`text-lg font-bold mb-4 text-center ${darkMode ? 'text-orange-300' : 'text-orange-700'}`}>
+                              🔔 Cycle Complete!
+                            </p>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMachineCollectionStatus(machine.id, 'dryer', 'collected');
+                              }}
+                              className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
+                              }`}
+                            >
+                              Clothes collected
+                            </button>
                           </>
                         )}
 
