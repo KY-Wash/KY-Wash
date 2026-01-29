@@ -79,6 +79,18 @@ interface Feedback {
   rating?: number;
 }
 
+interface AuditLog {
+  id: string;
+  action: 'cycle-cancelled' | 'clothes-collected' | 'machine-started' | 'machine-reset';
+  machineType: 'washer' | 'dryer';
+  machineId: number;
+  initiatedBy: string;
+  reason?: string;
+  timestamp: number;
+  date: string;
+  time: string;
+}
+
 interface Founder {
   id: string;
   name: string;
@@ -141,6 +153,7 @@ const KYWashSystem = () => {
   const [feedbackRating, setFeedbackRating] = useState<number>(0);
   const [showFeedback, setShowFeedback] = useState<boolean>(false);
   const [adminFeedbackTab, setAdminFeedbackTab] = useState<boolean>(false);
+  const [auditLog, setAuditLog] = useState<AuditLog[]>([]);
 
   const [showUserGuide, setShowUserGuide] = useState<boolean>(false);
   const [lockedMachines, setLockedMachines] = useState<Map<string, boolean>>(new Map());
@@ -446,6 +459,13 @@ const KYWashSystem = () => {
     }
   }, [founders]);
 
+  // Persist audit log to localStorage whenever it changes
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('kyWashAuditLog', JSON.stringify(auditLog));
+    }
+  }, [auditLog]);
+
   // Persist locked machines to localStorage whenever they change
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -503,6 +523,17 @@ const KYWashSystem = () => {
           setFounders(parsedFounders);
         } catch (error) {
           console.error('Failed to load founders from localStorage:', error);
+        }
+      }
+
+      // Load audit log from localStorage if available
+      const savedAuditLog = localStorage.getItem('kyWashAuditLog');
+      if (savedAuditLog) {
+        try {
+          const parsedAuditLog = JSON.parse(savedAuditLog);
+          setAuditLog(parsedAuditLog);
+        } catch (error) {
+          console.error('Failed to load audit log from localStorage:', error);
         }
       }
 
@@ -735,6 +766,35 @@ const KYWashSystem = () => {
     }
     // Fallback to alert
     alert(message);
+  };
+
+  const logAuditEvent = (action: AuditLog['action'], machineType: 'washer' | 'dryer', machineId: number, reason?: string): void => {
+    if (!user) return;
+
+    const now = new Date();
+    const date = now.toLocaleDateString();
+    const time = now.toLocaleTimeString();
+
+    const auditEntry: AuditLog = {
+      id: `audit-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      action,
+      machineType,
+      machineId,
+      initiatedBy: user.studentId,
+      reason,
+      timestamp: Date.now(),
+      date,
+      time,
+    };
+
+    setAuditLog((prev) => [...prev, auditEntry]);
+
+    // Emit to real-time API for server-side logging
+    if (socketRef.current?.emit) {
+      socketRef.current.emit('audit-log', auditEntry);
+    }
+
+    console.log(`[AUDIT] ${action} on ${machineType}-${machineId} by ${user.studentId}${reason ? ` - Reason: ${reason}` : ''}`);
   };
 
   
@@ -999,6 +1059,9 @@ const KYWashSystem = () => {
         return updated;
       });
 
+      // Log audit event for clothes collected
+      logAuditEvent('clothes-collected', machineType, machineId, 'User collected clothes from machine');
+
       // Emit to real-time API
       if (socketRef.current?.emit) {
         socketRef.current.emit('machine-collection-status', {
@@ -1034,6 +1097,7 @@ const KYWashSystem = () => {
       });
     }
 
+    // Reset machine state - fully clear all machine data
     setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
       machine.id === machineId && machine.type === machineType
         ? { 
@@ -1057,7 +1121,10 @@ const KYWashSystem = () => {
       return updated;
     });
 
-    showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} cycle cancelled by user ${user.studentId}. Machine is now available.`);
+    // Log audit event with reason
+    logAuditEvent('cycle-cancelled', machineType, machineId, 'Machine reported as empty - cycle cancelled by another user');
+
+    showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} cycle cancelled. Machine is now available.`);
   };
 
   const joinWaitlist = (type: string): void => {
@@ -3009,6 +3076,20 @@ const KYWashSystem = () => {
                             <p className={`text-2xl font-bold text-center py-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
                               {formatTime(machine.timeLeft)}
                             </p>
+                            {machine.userStudentId !== user?.studentId && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  cancelMachineByOtherUser(machine.id, 'washer');
+                                }}
+                                className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors mt-2 ${
+                                  darkMode ? 'bg-orange-700 hover:bg-orange-600 text-white' : 'bg-orange-500 hover:bg-orange-600 text-white'
+                                }`}
+                                title="Report this machine as empty during cycle"
+                              >
+                                🚨 Report Empty
+                              </button>
+                            )}
                           </>
                         )}
 
@@ -3179,6 +3260,20 @@ const KYWashSystem = () => {
                             <p className={`text-2xl font-bold text-center py-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
                               {formatTime(machine.timeLeft)}
                             </p>
+                            {machine.userStudentId !== user?.studentId && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  cancelMachineByOtherUser(machine.id, 'dryer');
+                                }}
+                                className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors mt-2 ${
+                                  darkMode ? 'bg-orange-700 hover:bg-orange-600 text-white' : 'bg-orange-500 hover:bg-orange-600 text-white'
+                                }`}
+                                title="Report this machine as empty during cycle"
+                              >
+                                🚨 Report Empty
+                              </button>
+                            )}
                           </>
                         )}
 
