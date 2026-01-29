@@ -13,7 +13,7 @@ interface User {
 interface Machine {
   id: number;
   type: 'washer' | 'dryer';
-  status: 'available' | 'running' | 'maintenance' | 'pending-collection';
+  status: 'available' | 'running' | 'maintenance';
   timeLeft: number;
   mode: string | null;
   locked: boolean;
@@ -649,17 +649,6 @@ const KYWashSystem = () => {
           reminderSentRef.current.add(machineKey);
           playNotificationSound();
           showNotification(`⏰ REMINDER: Your ${machine.type} ${machine.id} will be done in 5 minutes!`);
-        }
-      }
-      
-      // Check if machine just completed (transitioned to pending-collection)
-      // Only send to user who used this machine
-      if (machine.status === 'pending-collection' && !notifiedMachinesRef.current.has(machineKey)) {
-        if (machine.userStudentId === user?.studentId) {
-          notifiedMachinesRef.current.add(machineKey);
-          playNotificationSound();
-          startContinuousNotificationRing();
-          showNotification(`🔔 ${machine.type.charAt(0).toUpperCase() + machine.type.slice(1)} ${machine.id} is complete! Please collect your clothes.`);
         }
       }
       
@@ -3021,8 +3010,6 @@ const KYWashSystem = () => {
                             ? darkMode ? 'border-red-600 bg-red-900 opacity-60' : 'border-red-500 bg-red-50 opacity-60'
                             : machine.status === 'available'
                             ? darkMode ? 'border-green-600 bg-green-900 hover:shadow-lg' : 'border-green-500 bg-green-50 hover:shadow-lg'
-                            : machine.status === 'pending-collection'
-                            ? darkMode ? 'border-orange-600 bg-orange-900 animate-pulse' : 'border-orange-500 bg-orange-50 animate-pulse'
                             : darkMode ? 'border-yellow-600 bg-yellow-900' : 'border-yellow-500 bg-yellow-50'
                         }`}
                         onClick={() => !machine.locked && machine.status === 'available' && setSelectedMachine(machine)}
