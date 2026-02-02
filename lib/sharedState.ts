@@ -19,6 +19,7 @@ export interface SharedAppState {
     totalMinutes: number;
   };
   users: User[];
+  communityChat: ChatMessage[];
 }
 
 export interface Machine {
@@ -74,6 +75,15 @@ export interface User {
   password: string;
 }
 
+export interface ChatMessage {
+  id: string;
+  studentId: string;
+  message: string;
+  timestamp: number;
+  date: string;
+  time: string;
+}
+
 // Initial state
 export const createInitialState = (): SharedAppState => ({
   machines: [
@@ -111,6 +121,7 @@ export const createInitialState = (): SharedAppState => ({
     totalMinutes: 0,
   },
   users: [],
+  communityChat: [],
 });
 
 // Global state instance

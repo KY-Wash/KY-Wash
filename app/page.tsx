@@ -99,6 +99,15 @@ interface Founder {
   profileImage: string;
 }
 
+interface ChatMessage {
+  id: string;
+  studentId: string;
+  message: string;
+  timestamp: number;
+  date: string;
+  time: string;
+}
+
 const KYWashSystem = () => {
   const [user, setUser] = useState<User | null>(null);
   const [currentView, setCurrentView] = useState<'main' | 'admin' | 'history' | 'stats' | 'dryer-stats' | 'feedback' | 'user-guide'>('main' as 'main' | 'admin' | 'history' | 'stats' | 'dryer-stats' | 'feedback' | 'user-guide');
@@ -167,6 +176,12 @@ const KYWashSystem = () => {
   const [founderProfileImage, setFounderProfileImage] = useState<string>('');
   const [machineReportCounts, setMachineReportCounts] = useState<Map<string, number>>(new Map());
   const [machineCollectionStatus, setMachineCollectionStatus] = useState<Map<string, { status: 'waiting' | 'coming'; user: string }> >(new Map());
+  
+  // Community Chat States
+  const [communityChat, setCommunityChat] = useState<ChatMessage[]>([]);
+  const [chatMessage, setChatMessage] = useState<string>('');
+  const [showCommunityChat, setShowCommunityChat] = useState<boolean>(false);
+  
   const notificationAudioRef = useRef<AudioContext | null>(null);
   const notificationOscillatorRef = useRef<OscillatorNode | null>(null);
   const notificationGainRef = useRef<GainNode | null>(null);
@@ -364,6 +379,11 @@ const KYWashSystem = () => {
               status: record.status || 'completed',
             }))
           );
+
+          // Update community chat
+          if (newState.communityChat) {
+            setCommunityChat(newState.communityChat);
+          }
         }
       } catch (error) {
         console.error('Failed to fetch state:', error);
@@ -475,6 +495,13 @@ const KYWashSystem = () => {
     }
   }, [auditLog]);
 
+  // Persist community chat to localStorage whenever it changes
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('kyWashCommunityChat', JSON.stringify(communityChat));
+    }
+  }, [communityChat]);
+
   // Persist locked machines to localStorage whenever they change
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -543,6 +570,17 @@ const KYWashSystem = () => {
           setAuditLog(parsedAuditLog);
         } catch (error) {
           console.error('Failed to load audit log from localStorage:', error);
+        }
+      }
+
+      // Load community chat from localStorage if available
+      const savedCommunityChat = localStorage.getItem('kyWashCommunityChat');
+      if (savedCommunityChat) {
+        try {
+          const parsedChat = JSON.parse(savedCommunityChat);
+          setCommunityChat(parsedChat);
+        } catch (error) {
+          console.error('Failed to load community chat from localStorage:', error);
         }
       }
 
@@ -1358,6 +1396,52 @@ const KYWashSystem = () => {
   const deleteFounder = (founderId: string): void => {
     setFounders((prev: Founder[]) => prev.filter((f: Founder) => f.id !== founderId));
     showNotification('Founder removed successfully!');
+  };
+
+  // Community Chat Functions
+  const sendChatMessage = (): void => {
+    if (!user || !chatMessage.trim()) {
+      setError('Please enter a message');
+      return;
+    }
+
+    // Emit to real-time API
+    if (socketRef.current?.emit) {
+      socketRef.current.emit('community-chat-send', {
+        studentId: user.studentId,
+        message: chatMessage.trim(),
+      });
+    }
+
+    // Optimistically add message to local state
+    const now = new Date();
+    const newMessage: ChatMessage = {
+      id: `chat-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      studentId: user.studentId,
+      message: chatMessage.trim(),
+      timestamp: Date.now(),
+      date: now.toLocaleDateString(),
+      time: now.toLocaleTimeString(),
+    };
+
+    setCommunityChat((prev: ChatMessage[]) => [...prev, newMessage]);
+    setChatMessage('');
+  };
+
+  const deleteChatMessage = (messageId: string): void => {
+    if (!user) return;
+
+    // Emit to real-time API
+    if (socketRef.current?.emit) {
+      socketRef.current.emit('community-chat-delete', {
+        messageId: messageId,
+      });
+    }
+
+    // Remove from local state
+    setCommunityChat((prev: ChatMessage[]) => 
+      prev.filter((msg: ChatMessage) => msg.id !== messageId)
+    );
   };
 
   // Feedback functions

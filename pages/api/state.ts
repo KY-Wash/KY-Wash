@@ -397,6 +397,36 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           }
           break;
         }
+
+        case 'community-chat-send': {
+          const now = new Date();
+          const chatMessage = {
+            id: `chat-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            studentId: data.studentId,
+            message: data.message,
+            timestamp: Date.now(),
+            date: now.toLocaleDateString(),
+            time: now.toLocaleTimeString(),
+          };
+          if (!state.communityChat) {
+            state.communityChat = [];
+          }
+          // Limit chat history to last 100 messages to avoid excessive storage
+          state.communityChat.push(chatMessage);
+          if (state.communityChat.length > 100) {
+            state.communityChat = state.communityChat.slice(-100);
+          }
+          break;
+        }
+
+        case 'community-chat-delete': {
+          if (state.communityChat) {
+            state.communityChat = state.communityChat.filter(
+              (msg) => msg.id !== data.messageId
+            );
+          }
+          break;
+        }
       }
 
       updateAppState(state);
