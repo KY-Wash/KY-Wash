@@ -20,6 +20,7 @@ export interface SharedAppState {
   };
   users: User[];
   communityChat: ChatMessage[];
+  feedback: Array<{ id: string; studentId: string; studentName: string; message: string; timestamp: number; date: string; isDone: boolean; reportCount: number; warnings: number; rating?: number }>;
   machineCollectionStatus: Record<string, { status: 'waiting' | 'coming' | 'collected'; user: string }>;
 }
 
@@ -123,6 +124,7 @@ export const createInitialState = (): SharedAppState => ({
   },
   users: [],
   communityChat: [],
+  feedback: [],
   machineCollectionStatus: {},
 });
 

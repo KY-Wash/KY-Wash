@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getAppState, updateAppState, loadPersistedState } from '@/lib/sharedState';
+import { insertChatMessageToDB, deleteChatMessageFromDB, insertFeedbackToDB, markFeedbackDoneInDB, reportFeedbackInDB, deleteFeedbackFromDB, getServiceSupabaseClient } from '@/lib/supabase';
 
 // Track machine start times for accurate timer calculation based on system clock
 const machineStartTimes: Map<string, number> = new Map();
@@ -157,6 +158,49 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!stateLoaded) {
     loadPersistedState();
     stateLoaded = true;
+
+    // Try to fetch persisted chat & feedback from Supabase to seed server state
+    (async () => {
+      try {
+        const svc = getServiceSupabaseClient();
+        if (!svc) return;
+
+        const { data: chatData, error: chatErr } = await svc.from('community_chat').select('*').order('created_at', { ascending: true }).limit(100);
+        if (!chatErr && chatData) {
+          const state = getAppState();
+          state.communityChat = (chatData as any[]).map(c => ({
+            id: c.id,
+            studentId: c.student_id || '',
+            message: c.message,
+            timestamp: new Date(c.created_at).getTime(),
+            date: new Date(c.created_at).toLocaleDateString(),
+            time: new Date(c.created_at).toLocaleTimeString(),
+          }));
+        }
+
+        const { data: fbData, error: fbErr } = await svc.from('feedback_issues').select('*').order('created_at', { ascending: true }).limit(200);
+        if (!fbErr && fbData) {
+          const state = getAppState();
+          state.feedback = (fbData as any[]).map(f => ({
+            id: f.id,
+            studentId: f.student_id || '',
+            studentName: f.student_name || f.student_id || '',
+            message: f.message,
+            timestamp: new Date(f.created_at).getTime(),
+            date: new Date(f.created_at).toLocaleDateString(),
+            isDone: f.status === 'closed',
+            reportCount: f.report_count || 0,
+            warnings: f.warnings || 0,
+            rating: f.rating || undefined,
+          }));
+        }
+
+        // Persist back to state file
+        updateAppState(getAppState());
+      } catch (err) {
+        console.error('Failed to seed state from Supabase:', err);
+      }
+    })();
   }
 
   // Enable CORS
@@ -421,6 +465,16 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           if (state.communityChat.length > 100) {
             state.communityChat = state.communityChat.slice(-100);
           }
+
+          // Persist message to Supabase (async)
+          (async () => {
+            try {
+              await insertChatMessageToDB(chatMessage);
+            } catch (err) {
+              console.error('Failed to insert chat message to Supabase', err);
+            }
+          })();
+
           break;
         }
 
@@ -466,6 +520,98 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
               (msg) => msg.id !== data.messageId
             );
           }
+
+          // Persist deletion to Supabase if configured (async)
+          (async () => {
+            try {
+              await deleteChatMessageFromDB(data.messageId);
+            } catch (err) {
+              console.error('Failed to delete chat message from Supabase', err);
+            }
+          })();
+
+          break;
+        }
+
+        case 'feedback-submit': {
+          const now = new Date();
+          const fb = {
+            id: `fb-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            studentId: data.studentId,
+            studentName: data.studentName || data.studentId,
+            message: data.message,
+            timestamp: Date.now(),
+            date: now.toLocaleDateString(),
+            isDone: false,
+            reportCount: 0,
+            warnings: 0,
+            rating: data.rating || null,
+          };
+          if (!state.feedback) state.feedback = [];
+          state.feedback.push(fb);
+
+          // Persist feedback to Supabase (async)
+          (async () => {
+            try {
+              await insertFeedbackToDB({ studentId: fb.studentId, studentName: fb.studentName, message: fb.message, rating: fb.rating });
+            } catch (err) {
+              console.error('Failed to insert feedback to Supabase', err);
+            }
+          })();
+
+          break;
+        }
+
+        case 'feedback-mark-done': {
+          if (!state.feedback) state.feedback = [];
+          const fb = state.feedback.find((f) => f.id === data.feedbackId);
+          if (fb) fb.isDone = true;
+
+          // Persist change to Supabase
+          (async () => {
+            try {
+              await markFeedbackDoneInDB(data.feedbackId);
+            } catch (err) {
+              console.error('Failed to mark feedback as done in Supabase', err);
+            }
+          })();
+
+          break;
+        }
+
+        case 'feedback-report': {
+          if (!state.feedback) state.feedback = [];
+          const fb = state.feedback.find((f) => f.id === data.feedbackId);
+          if (fb) {
+            fb.reportCount = (fb.reportCount || 0) + 1;
+            if (fb.reportCount >= 3 && (fb.warnings || 0) === 0) {
+              fb.warnings = 1;
+            }
+          }
+
+          (async () => {
+            try {
+              await reportFeedbackInDB(data.feedbackId);
+            } catch (err) {
+              console.error('Failed to report feedback in Supabase', err);
+            }
+          })();
+
+          break;
+        }
+
+        case 'feedback-delete': {
+          if (!state.feedback) state.feedback = [];
+          state.feedback = state.feedback.filter((f) => f.id !== data.feedbackId);
+
+          (async () => {
+            try {
+              await deleteFeedbackFromDB(data.feedbackId);
+            } catch (err) {
+              console.error('Failed to delete feedback in Supabase', err);
+            }
+          })();
+
           break;
         }
       }

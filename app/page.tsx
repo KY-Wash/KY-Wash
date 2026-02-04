@@ -181,6 +181,14 @@ const KYWashSystem = () => {
   const [communityChat, setCommunityChat] = useState<ChatMessage[]>([]);
   const [chatMessage, setChatMessage] = useState<string>('');
   const [showCommunityChat, setShowCommunityChat] = useState<boolean>(false);
+  const [lastSeenChatTimestamp, setLastSeenChatTimestamp] = useState<number>(0);
+
+  // Initialize last-seen timestamp to now on first load to avoid marking all existing messages as unread
+  useEffect(() => {
+    setLastSeenChatTimestamp(Date.now());
+  }, []);
+
+  const unreadChatCount = communityChat.filter((m) => m.timestamp > lastSeenChatTimestamp).length;
   
   const notificationAudioRef = useRef<AudioContext | null>(null);
   const notificationOscillatorRef = useRef<OscillatorNode | null>(null);
@@ -395,6 +403,22 @@ const KYWashSystem = () => {
           // Update community chat
           if (newState.communityChat) {
             setCommunityChat(newState.communityChat);
+          }
+
+          // Update feedback (server-persisted feedback)
+          if (newState.feedback) {
+            setFeedback(newState.feedback.map((f: any) => ({
+              id: f.id,
+              studentId: f.studentId,
+              studentName: f.studentName || f.studentId,
+              message: f.message,
+              timestamp: f.timestamp,
+              date: f.date,
+              isDone: !!f.isDone,
+              reportCount: f.reportCount || 0,
+              warnings: f.warnings || 0,
+              rating: f.rating || undefined,
+            })));
           }
         }
       } catch (error) {
@@ -1475,6 +1499,17 @@ const KYWashSystem = () => {
     };
 
     setFeedback((prev: Feedback[]) => [...prev, newFeedback]);
+
+    // Emit to real-time API so feedback is stored server-side
+    if (socketRef.current?.emit) {
+      socketRef.current.emit('feedback-submit', {
+        studentId: newFeedback.studentId,
+        studentName: newFeedback.studentName,
+        message: newFeedback.message,
+        rating: newFeedback.rating || null,
+      });
+    }
+
     setFeedbackMessage('');
     setFeedbackRating(0);
     setError('');
@@ -1487,6 +1522,11 @@ const KYWashSystem = () => {
         f.id === feedbackId ? { ...f, isDone: true } : f
       )
     );
+
+    if (socketRef.current?.emit) {
+      socketRef.current.emit('feedback-mark-done', { feedbackId });
+    }
+
     showNotification('Feedback marked as done!');
   };
 
@@ -1505,11 +1545,21 @@ const KYWashSystem = () => {
         return f;
       })
     );
+
+    if (socketRef.current?.emit) {
+      socketRef.current.emit('feedback-report', { feedbackId });
+    }
+
     showNotification('Feedback reported!');
   };
 
   const deleteFeedback = (feedbackId: string): void => {
     setFeedback((prev: Feedback[]) => prev.filter((f: Feedback) => f.id !== feedbackId));
+
+    if (socketRef.current?.emit) {
+      socketRef.current.emit('feedback-delete', { feedbackId });
+    }
+
     showNotification('Feedback deleted successfully!');
   };
 
@@ -2996,31 +3046,7 @@ const KYWashSystem = () => {
               </button>
             </div>
 
-            {/* Community Chat (Global) — visible on the main page */}
-            <div className={`rounded-lg shadow-md p-4 transition-colors mb-6 ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
-              <h3 className="text-lg font-semibold mb-3">Community Chat (Global)</h3>
-              <div className={`p-3 rounded ${darkMode ? 'bg-gray-900' : 'bg-gray-50'} mb-2`}>
-                <div className="max-h-40 overflow-auto space-y-2" aria-live="polite">
-                  {communityChat.length === 0 && <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No messages yet.</p>}
-                  {renderCommunityChat()}
-                </div>
-                <div className="flex gap-2 mt-3">
-                  <input
-                    value={chatMessage}
-                    onChange={(e) => setChatMessage(e.target.value)}
-                    className="w-full px-3 py-2 rounded border"
-                    placeholder={user ? 'Say something to the community...' : 'Login to chat'}
-                    disabled={!user}
-                  />
-                  <button
-                    onClick={sendChatMessage}
-                    className={`px-4 py-2 rounded ${darkMode ? 'bg-blue-700 text-white' : 'bg-blue-500 text-white'}`}
-                  >
-                    Send
-                  </button>
-                </div>
-              </div>
-            </div>
+
 
             {/* Machines Grid */}
             {currentView === 'main' && !showFeedback && (
@@ -3574,7 +3600,7 @@ const KYWashSystem = () => {
                       <img
                         src="/founderjustin.jpeg"
                         alt="Justin Low Chun Xian"
-                        className="w-full h-48 object-cover"
+                        className={`w-full h-48 object-cover object-center ${darkMode ? 'bg-gray-800' : 'bg-gray-100'}`}
                       />
                       <div className="p-4">
                         <p className={`text-lg font-bold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
@@ -3588,6 +3614,29 @@ const KYWashSystem = () => {
                         </p>
                       </div>
                     </div>
+
+                    <div className={`rounded-lg overflow-hidden shadow-md transition hover:shadow-lg ${
+                      darkMode ? 'bg-gray-700' : 'bg-gray-50'
+                    }`}>
+                      <img
+                        src="/founderjames.jpeg"
+                        alt="James Low"
+                        className={`w-full h-48 object-cover object-center ${darkMode ? 'bg-gray-800' : 'bg-gray-100'}`}
+                        style={{ objectPosition: 'center 70%' }}
+                      />
+                      <div className="p-4">
+                        <p className={`text-lg font-bold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                          James Low Weng Kean
+                        </p>
+                        <p className={`text-sm font-bold mb-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+                          📚 <span className="font-bold">Khazanah Global Scholar</span>
+                        </p>
+                        <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                          🎓 Artificial Intelligence
+                        </p>
+                      </div>
+                    </div>
+
                     {/* Additional Founders from Form */}
                     {founders.map((founder: Founder) => (
                       <div
@@ -3598,20 +3647,20 @@ const KYWashSystem = () => {
                       >
                         {founder.profileImage && (
                           <img
-                            src={founder.profileImage}
-                            alt={founder.name}
+                            src="/founderjames.jpeg"
+                            alt="James Low"
                             className="w-full h-48 object-cover"
                           />
                         )}
                         <div className="p-4">
                           <p className={`text-lg font-bold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                            {founder.name}
+                            James Low Weng Kean
                           </p>
                           <p className={`text-sm font-bold mb-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
-                            📚 {founder.scholarship}
+                            📚 Khazanah Global Scholar
                           </p>
                           <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                            🎓 {founder.course}
+                            🎓 Artificial Intelligence
                           </p>
                         </div>
                       </div>
@@ -4466,7 +4515,60 @@ const KYWashSystem = () => {
           </div>
         </div>
       )}
+    {/* Floating Community Chat Widget */}
+    <div className="fixed bottom-6 right-6 z-50">
+      <div className="relative">
+        <button
+          onClick={() => {
+            setShowCommunityChat(!showCommunityChat);
+            if (!showCommunityChat) {
+              setLastSeenChatTimestamp(communityChat.length ? communityChat[communityChat.length - 1].timestamp : Date.now());
+            }
+          }}
+          className={`w-14 h-14 rounded-full shadow-lg flex items-center justify-center focus:outline-none transition-colors ${showCommunityChat ? 'bg-blue-600 text-white' : darkMode ? 'bg-gray-700 text-white' : 'bg-blue-500 text-white'}`}
+          title="Community Chat"
+          aria-label="Toggle community chat"
+        >
+          <Waves className="w-6 h-6" />
+          {unreadChatCount > 0 && !showCommunityChat && (
+            <span className="absolute -top-1 -right-1 inline-flex items-center justify-center px-2 py-1 text-xs font-bold leading-none text-white bg-red-600 rounded-full">{unreadChatCount}</span>
+          )}
+        </button>
+
+        {showCommunityChat && (
+          <div className={`mt-3 w-80 max-h-96 bg-white rounded-lg shadow-lg overflow-hidden flex flex-col ${darkMode ? 'bg-gray-800 text-white' : 'text-gray-800'}`}>
+            <div className={`flex items-center justify-between px-3 py-2 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+              <div className="font-semibold">Community Chat</div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setShowCommunityChat(false)} className={`text-xs px-2 py-1 rounded ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}>Close</button>
+              </div>
+            </div>
+            <div className="p-3 overflow-auto flex-1 space-y-2">
+              {communityChat.length === 0 ? (
+                <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No messages yet.</p>
+              ) : (
+                <div className="space-y-2">{renderCommunityChat()}</div>
+              )}
+            </div>
+            <div className={`p-3 border-t ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+              <div className="flex gap-2">
+                <input
+                  value={chatMessage}
+                  onChange={(e) => setChatMessage(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && sendChatMessage()}
+                  className={`flex-1 px-3 py-2 rounded border ${darkMode ? 'bg-gray-700 text-white border-gray-600' : 'bg-white text-black border-gray-300'}`}
+                  placeholder={user ? 'Say something to the community...' : 'Login to chat'}
+                  disabled={!user}
+                />
+                <button onClick={sendChatMessage} className={`px-3 py-2 rounded ${darkMode ? 'bg-blue-700 text-white' : 'bg-blue-500 text-white'}`}>Send</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
+
+  </div>
   );
 };
 
