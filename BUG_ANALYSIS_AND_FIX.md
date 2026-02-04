@@ -3,7 +3,7 @@
 ## Critical Issues Identified.
 
 ### 1. **Report No One Button Freezes Timer** ❌
-**Root Cause:** 
+**Root Cause:** .
 - Frontend emits 'no-one-report' event
 - Backend **has no handler** for 'no-one-report' event
 - Backend doesn't reset the machine state
