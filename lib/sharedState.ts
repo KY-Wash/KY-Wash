@@ -20,6 +20,7 @@ export interface SharedAppState {
   };
   users: User[];
   communityChat: ChatMessage[];
+  machineCollectionStatus: Record<string, { status: 'waiting' | 'coming' | 'collected'; user: string }>;
 }
 
 export interface Machine {
@@ -122,6 +123,7 @@ export const createInitialState = (): SharedAppState => ({
   },
   users: [],
   communityChat: [],
+  machineCollectionStatus: {},
 });
 
 // Global state instance

@@ -13,7 +13,7 @@ interface User {
 interface Machine {
   id: number;
   type: 'washer' | 'dryer';
-  status: 'available' | 'running' | 'maintenance';
+  status: 'available' | 'running' | 'maintenance' | 'pending-collection';
   timeLeft: number;
   mode: string | null;
   locked: boolean;
@@ -175,7 +175,7 @@ const KYWashSystem = () => {
   const [founderCourse, setFounderCourse] = useState<string>('');
   const [founderProfileImage, setFounderProfileImage] = useState<string>('');
   const [machineReportCounts, setMachineReportCounts] = useState<Map<string, number>>(new Map());
-  const [machineCollectionStatus, setMachineCollectionStatus] = useState<Map<string, { status: 'waiting' | 'coming'; user: string }> >(new Map());
+  const [machineCollectionStatus, setMachineCollectionStatus] = useState<Map<string, { status: 'waiting' | 'coming' | 'collected'; user: string }> >(new Map());
   
   // Community Chat States
   const [communityChat, setCommunityChat] = useState<ChatMessage[]>([]);
@@ -194,8 +194,9 @@ const KYWashSystem = () => {
   }, []);
 
   const washerModes: Mode[] = [
-    { name: 'Normal', duration: 1 },
-    { name: 'Extra Wash', duration: 40 }
+    { name: 'Normal', duration: 30 },
+    { name: 'Extra Wash', duration: 35 },
+    { name: 'Extra Wash + Extra Rinse', duration: 42 }
   ];
 
   const dryerModes: Mode[] = [
@@ -264,6 +265,17 @@ const KYWashSystem = () => {
                   resolved: issue.resolved,
                 }))
               );
+            }
+
+            // Update machine collection status (for 'coming' / 'collected')
+            if (newState.machineCollectionStatus) {
+              const map = new Map<string, { status: 'waiting' | 'coming' | 'collected'; user: string }>();
+              Object.entries(newState.machineCollectionStatus).forEach(([k, v]: any) => {
+                map.set(k, v as { status: 'waiting' | 'coming' | 'collected'; user: string });
+              });
+              setMachineCollectionStatus(map);
+            } else {
+              setMachineCollectionStatus(new Map());
             }
 
             // Update usage history
@@ -423,15 +435,11 @@ const KYWashSystem = () => {
                   studentId: machine.userStudentId,
                 });
               }
-              // Reset machine to available state immediately
-              return { 
-                ...machine, 
-                timeLeft: 0, 
-                status: 'available',
-                userStudentId: null,
-                userPhone: null,
-                mode: null,
-                originalDuration: undefined
+              // Transition to pending-collection so users can mark the clothes as collected.
+              return {
+                ...machine,
+                timeLeft: 0,
+                status: 'pending-collection'
               };
             }
             
@@ -690,9 +698,9 @@ const KYWashSystem = () => {
         }
       }
       
-      // Check if machine just completed (transitioned to available from running)
+      // Check if machine just completed (transitioned to pending-collection from running)
       // Only send to user who used this machine
-      if (machine.status === 'available' && !notifiedMachinesRef.current.has(machineKey)) {
+      if (machine.status === 'pending-collection' && !notifiedMachinesRef.current.has(machineKey)) {
         if (machine.userStudentId === user?.studentId && machine.originalDuration) {
           notifiedMachinesRef.current.add(machineKey);
           playNotificationSound();
@@ -1066,36 +1074,19 @@ const KYWashSystem = () => {
     if (!user) return;
 
     const machineKey = `${machineType}-${machineId}`;
-    
-    if (status === 'coming') {
-      // User is coming to collect - automatically reset the machine and make it available
-      // Clear all machine data to allow other users to start fresh
-      setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
-        machine.id === machineId && machine.type === machineType
-          ? { 
-              ...machine, 
-              status: 'available', 
-              timeLeft: 0, 
-              mode: null, 
-              userStudentId: null, 
-              userPhone: null, 
-              originalDuration: undefined, 
-              collectionStatus: null,
-              locked: false  // Ensure machine is not locked
-            }
-          : machine
-      ));
 
+    if (status === 'coming') {
+      // Mark in-progress that someone is coming to collect but DON'T free the machine yet
       setMachineCollectionStatus((prev) => {
         const updated = new Map(prev);
-        updated.delete(machineKey);
+        updated.set(machineKey, { status: 'coming', user: user.studentId });
         return updated;
       });
 
-      // Log audit event for clothes collected
-      logAuditEvent('clothes-collected', machineType, machineId, 'User marked as coming to collect clothes');
+      // Log audit event
+      logAuditEvent('clothes-collected', machineType, machineId, `User ${user.studentId} is coming to collect clothes`);
 
-      // Emit to real-time API
+      // Emit to server so others see it
       if (socketRef.current?.emit) {
         socketRef.current.emit('machine-collection-status', {
           machineId: String(machineId),
@@ -1105,10 +1096,9 @@ const KYWashSystem = () => {
         });
       }
 
-      showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} is now available for other users!`);
+      showNotification(`${user.studentId} is coming to collect clothes from ${machineType} ${machineId}`);
     } else if (status === 'collected') {
-      // Clothes collected - make machine fully reset and available for new cycle
-      // Clear all machine data to allow other users to start fresh
+      // Optimistically mark machine as available and clear collection status
       setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
         machine.id === machineId && machine.type === machineType
           ? { 
@@ -1119,8 +1109,6 @@ const KYWashSystem = () => {
               userStudentId: null, 
               userPhone: null, 
               originalDuration: undefined, 
-              collectionStatus: null,
-              locked: false  // Ensure machine is not locked
             }
           : machine
       ));
@@ -1132,9 +1120,9 @@ const KYWashSystem = () => {
       });
 
       // Log audit event for clothes collected
-      logAuditEvent('clothes-collected', machineType, machineId, 'User collected clothes from machine');
+      logAuditEvent('clothes-collected', machineType, machineId, `User ${user.studentId} marked clothes as collected`);
 
-      // Emit to real-time API
+      // Emit to real-time API (server will mark usage completed and free machine globally)
       if (socketRef.current?.emit) {
         socketRef.current.emit('machine-collection-status', {
           machineId: String(machineId),
@@ -1144,9 +1132,10 @@ const KYWashSystem = () => {
         });
       }
 
-      showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} is now available for other users!`);
+      showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} marked as collected.`);
     }
   };
+
 
   const cancelMachineByOtherUser = (machineId: number, machineType: 'washer' | 'dryer'): void => {
     if (!user) return;
@@ -1442,6 +1431,22 @@ const KYWashSystem = () => {
     setCommunityChat((prev: ChatMessage[]) => 
       prev.filter((msg: ChatMessage) => msg.id !== messageId)
     );
+  };
+
+  const renderCommunityChat = (): React.ReactNode[] => {
+    return communityChat.map((msg: ChatMessage) => (
+      <div key={msg.id} className="flex items-start justify-between">
+        <div>
+          <p className="text-sm font-semibold">{msg.studentId} <span className="text-xs font-normal text-gray-500 ml-2">{msg.time}</span></p>
+          <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{msg.message}</p>
+        </div>
+        {user?.studentId === msg.studentId && (
+          <button onClick={() => deleteChatMessage(msg.id)} className={`ml-2 px-2 py-1 rounded text-xs ${darkMode ? 'bg-red-700 text-white' : 'bg-red-200 text-red-700'}`}>
+            Delete
+          </button>
+        )}
+      </div>
+    ));
   };
 
   // Feedback functions
@@ -2318,6 +2323,29 @@ const KYWashSystem = () => {
                 <div className={`p-4 rounded-lg transition-colors ${
                   darkMode ? 'bg-gray-700' : 'bg-gray-50'
                 }`}>
+                  <h3 className="text-lg font-semibold mb-3">Community Chat (Global)</h3>
+                  <div className={`p-3 rounded ${darkMode ? 'bg-gray-800' : 'bg-white'} mb-4`}>
+                    <div className="max-h-48 overflow-auto space-y-2" aria-live="polite">
+                      {communityChat.length === 0 && <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No messages yet.</p>}
+                      {renderCommunityChat()}
+                    </div>
+                    <div className="flex gap-2 mt-3">
+                      <input
+                        value={chatMessage}
+                        onChange={(e) => setChatMessage(e.target.value)}
+                        className="w-full px-3 py-2 rounded border"
+                        placeholder={user ? 'Say something to the community...' : 'Login to chat'}
+                        disabled={!user}
+                      />
+                      <button
+                        onClick={sendChatMessage}
+                        className={`px-4 py-2 rounded ${darkMode ? 'bg-blue-700 text-white' : 'bg-blue-500 text-white'}`}
+                      >
+                        Send
+                      </button>
+                    </div>
+                  </div>
+
                   <h3 className="text-lg font-semibold mb-3">Washer Usage</h3>
                   <div className="space-y-2">
                     {washerModes.map(mode => {
@@ -2968,6 +2996,32 @@ const KYWashSystem = () => {
               </button>
             </div>
 
+            {/* Community Chat (Global) — visible on the main page */}
+            <div className={`rounded-lg shadow-md p-4 transition-colors mb-6 ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+              <h3 className="text-lg font-semibold mb-3">Community Chat (Global)</h3>
+              <div className={`p-3 rounded ${darkMode ? 'bg-gray-900' : 'bg-gray-50'} mb-2`}>
+                <div className="max-h-40 overflow-auto space-y-2" aria-live="polite">
+                  {communityChat.length === 0 && <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No messages yet.</p>}
+                  {renderCommunityChat()}
+                </div>
+                <div className="flex gap-2 mt-3">
+                  <input
+                    value={chatMessage}
+                    onChange={(e) => setChatMessage(e.target.value)}
+                    className="w-full px-3 py-2 rounded border"
+                    placeholder={user ? 'Say something to the community...' : 'Login to chat'}
+                    disabled={!user}
+                  />
+                  <button
+                    onClick={sendChatMessage}
+                    className={`px-4 py-2 rounded ${darkMode ? 'bg-blue-700 text-white' : 'bg-blue-500 text-white'}`}
+                  >
+                    Send
+                  </button>
+                </div>
+              </div>
+            </div>
+
             {/* Machines Grid */}
             {currentView === 'main' && !showFeedback && (
               <>
@@ -3194,6 +3248,55 @@ const KYWashSystem = () => {
                           </>
                         )}
 
+                        {machine.status === 'pending-collection' && (
+                          <>
+                            <p className={`text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                              ✅ Cycle complete — awaiting collection
+                            </p>
+                            <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Previous user: {machine.userStudentId}</p>
+                            <div className="flex gap-2">
+                              {user?.studentId === machine.userStudentId ? (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleMachineCollectionStatus(machine.id, machine.type, 'collected');
+                                  }}
+                                  className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                    darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
+                                  }`}
+                                >
+                                  I collected my clothes
+                                </button>
+                              ) : (
+                                <>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMachineCollectionStatus(machine.id, machine.type, 'coming');
+                                    }}
+                                    className={`px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                      darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
+                                    }`}
+                                  >
+                                    I'm collecting
+                                  </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMachineCollectionStatus(machine.id, machine.type, 'collected');
+                                    }}
+                                    className={`px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                      darkMode ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-gray-200 hover:bg-gray-300 text-gray-800'
+                                    }`}
+                                  >
+                                    Report collected
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </>
+                        )}
+
                         {machine.status === 'available' && !machine.locked && (
                           <>
                             <div className="space-y-2 mb-3">
@@ -3296,6 +3399,55 @@ const KYWashSystem = () => {
                                 Cancel
                               </button>
                             )}
+                          </>
+                        )}
+
+                        {machine.status === 'pending-collection' && (
+                          <>
+                            <p className={`text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                              ✅ Cycle complete — awaiting collection
+                            </p>
+                            <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Previous user: {machine.userStudentId}</p>
+                            <div className="flex gap-2">
+                              {user?.studentId === machine.userStudentId ? (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleMachineCollectionStatus(machine.id, machine.type, 'collected');
+                                  }}
+                                  className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                    darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
+                                  }`}
+                                >
+                                  I collected my clothes
+                                </button>
+                              ) : (
+                                <>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMachineCollectionStatus(machine.id, machine.type, 'coming');
+                                    }}
+                                    className={`px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                      darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
+                                    }`}
+                                  >
+                                    I'm collecting
+                                  </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMachineCollectionStatus(machine.id, machine.type, 'collected');
+                                    }}
+                                    className={`px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                      darkMode ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-gray-200 hover:bg-gray-300 text-gray-800'
+                                    }`}
+                                  >
+                                    Report collected
+                                  </button>
+                                </>
+                              )}
+                            </div>
                           </>
                         )}
 

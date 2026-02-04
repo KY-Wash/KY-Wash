@@ -353,6 +353,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         }
 
         case 'clothes-collected': {
+          // Backward compatible handler: mark machine as available if the original user confirms
           const machine = state.machines.find(
             (m) => m.id === data.machineId && m.type === data.machineType
           );
@@ -368,6 +369,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             machine.mode = '';
             machine.userStudentId = '';
             machine.userPhone = '';
+
+            // Clear any pending collection status for this machine
+            if (!state.machineCollectionStatus) state.machineCollectionStatus = {};
+            delete state.machineCollectionStatus[`${data.machineType}-${data.machineId}`];
           }
           break;
         }
@@ -415,6 +420,42 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           state.communityChat.push(chatMessage);
           if (state.communityChat.length > 100) {
             state.communityChat = state.communityChat.slice(-100);
+          }
+          break;
+        }
+
+        case 'machine-collection-status': {
+          // status: 'coming' | 'collected'
+          const { machineId, machineType, status, studentId } = data;
+          const machine = state.machines.find(
+            (m) => m.id === machineId && m.type === machineType
+          );
+          const key = `${machineType}-${machineId}`;
+          if (!state.machineCollectionStatus) state.machineCollectionStatus = {};
+
+          if (status === 'coming') {
+            state.machineCollectionStatus[key] = { status: 'coming', user: studentId };
+          } else if (status === 'collected') {
+            // Accept collected reports from anyone - mark usage completed and free machine
+            // Find in-progress usage record and mark Completed
+            const historyRecord = state.usageHistory.find(h => h.machineType === machineType && h.machineId === machineId && h.status === 'In Progress');
+            if (historyRecord) historyRecord.status = 'Completed';
+
+            // Update stats
+            state.stats.totalWashes += 1;
+
+            // Stop server-side timer
+            stopServerTimer(machineId, machineType);
+
+            if (machine) {
+              machine.status = 'available';
+              machine.timeLeft = 0;
+              machine.mode = '';
+              machine.userStudentId = '';
+              machine.userPhone = '';
+            }
+
+            delete state.machineCollectionStatus[key];
           }
           break;
         }
