@@ -902,10 +902,6 @@ const KYWashSystem = () => {
       setError('Student ID must be 6 digits');
       return;
     }
-    if (!validatePhone(phoneNumber)) {
-      setError('Phone must be 10-11 digits');
-      return;
-    }
     if (!validatePassword(password)) {
       setError('Password must be 8 digits');
       return;
@@ -917,6 +913,12 @@ const KYWashSystem = () => {
       // REGISTRATION MODE using Supabase Auth
       if (users.some(u => u.studentId === studentId)) {
         setError('This Student ID is already registered. Please login instead.');
+        return;
+      }
+
+      // Validate phone for registration
+      if (!validatePhone(phoneNumber)) {
+        setError('Phone must be 10-11 digits');
         return;
       }
 
@@ -957,17 +959,11 @@ const KYWashSystem = () => {
           const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
           if (signInError) throw signInError;
 
-          // Fetch user's phone from `users` table and validate
+          // Fetch user's phone from `users` table (if present)
           const { data: userRow, error: fetchErr } = await supabase.from('users').select('phone_number').eq('student_id', studentId).maybeSingle();
           if (fetchErr) console.warn('Could not fetch user phone from DB:', fetchErr.message || fetchErr);
 
-          const registeredPhone = userRow?.phone_number || phoneNumber;
-          if (registeredPhone !== phoneNumber) {
-            // Sign out if phone mismatch
-            await supabase.auth.signOut();
-            setError('Phone number does not match our records.');
-            return;
-          }
+          const registeredPhone = userRow?.phone_number || '';
 
           // Login successful
           setUser({ studentId, phoneNumber: registeredPhone });
@@ -984,16 +980,13 @@ const KYWashSystem = () => {
             setError('Student ID not found. Please create a new account.');
             return;
           }
-          if (userRecord.phoneNumber !== phoneNumber) {
-            setError('Phone number is incorrect for this account.');
-            return;
-          }
           if ((userRecord as any).password && (userRecord as any).password !== password) {
             setError('Password is incorrect.');
             return;
           }
 
-          setUser({ studentId, phoneNumber });
+          // Use the stored phone number if available
+          setUser({ studentId, phoneNumber: userRecord.phoneNumber || '' });
           setShowLogin(false);
           setCurrentView('main');
           setStudentId('');
@@ -1962,7 +1955,7 @@ const KYWashSystem = () => {
           </div>
           {user && (
             <div className="flex items-center gap-4">
-              <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>ID: {user.studentId}</span>
+              <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>ID: {user.studentId}{user.phoneNumber ? ` • Phone: ${user.phoneNumber}` : ''}</span>
               <button
                 onClick={() => setDarkMode(!darkMode)}
                 className={`px-4 py-2 rounded-lg font-medium transition ${
@@ -2112,19 +2105,7 @@ const KYWashSystem = () => {
                     placeholder="123456"
                   />
                 </div>
-                <div className="mb-4">
-                  <label className="block text-sm font-medium mb-2">Phone (10-11 digits)</label>
-                  <input
-                    type="text"
-                    value={phoneNumber}
-                    onChange={(e) => setPhoneNumber(e.target.value.slice(0, 11))}
-                    maxLength={11}
-                    className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
-                      darkMode ? 'bg-gray-700 text-white border-gray-600' : 'bg-white text-black border-gray-300'
-                    }`}
-                    placeholder="01234567890"
-                  />
-                </div>
+                {/* Phone input removed for login (only required during registration) */}
                 <div className="mb-4">
                   <label className="block text-sm font-medium mb-2">Password (8 digits)</label>
                   <input
