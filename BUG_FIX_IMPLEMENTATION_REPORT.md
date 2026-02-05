@@ -158,11 +158,11 @@ setMachines((prevMachines) => {
 
 **Before**: 
 - 3 separate state updates (setMachines, setUsageHistory, setLockedMachines)
-- 2 event emissions ('no-one-report' + 'machine-force-stop')
+- 2 event /emissions ('no-one-report' + 'machine-force-stop')
 - Race conditions between updates
 
 **After**:
-- Single optimistic UI update
+- Single optim,istic UI update
 - Single event emission to backend
 - Backend response provides authoritative state
 - Clean separation of concerns
