@@ -16,6 +16,8 @@ interface Machine {
   type: 'washer' | 'dryer';
   status: 'available' | 'running' | 'maintenance' | 'pending-collection';
   timeLeft: number;
+  // finishTimestamp (ms since epoch) is the canonical timer source when available.
+  finishTimestamp?: number;
   mode: string | null;
   locked: boolean;
   userStudentId: string | null;
@@ -475,7 +477,7 @@ const KYWashSystem = () => {
             }
 
             // Move to pending-collection to allow users to confirm collection
-            return { ...machine, status: 'pending-collection', timeLeft: 0, finishTimestamp: undefined };
+            return { ...machine, status: 'pending-collection' as Machine['status'], timeLeft: 0, finishTimestamp: undefined };
           }
         }
         return machine;
