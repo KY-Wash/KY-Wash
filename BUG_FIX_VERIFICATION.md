@@ -5,7 +5,7 @@
 ### Bug #1: "Report No One" Button - FIXED
 - **Problem**: Timer freezes, machine doesn't reset to available x zx
 - **Root Cause**: `reportNoOne()` function not awaiting backend response
-- **Fix Applied**: 
+- **Fix Applied**: ds
   - Changed to `async` function returning `Promise<void>`
   - Added `await socketRef.current.emit('no-one-report', ...)`
   - Added try/catch error handling
