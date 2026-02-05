@@ -154,6 +154,8 @@ const KYWashSystem = () => {
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const [expandedWasherWaitlist, setExpandedWasherWaitlist] = useState<boolean>(false);
   const [expandedDryerWaitlist, setExpandedDryerWaitlist] = useState<boolean>(false);
+  // Track which waitlist entries are expanded (stable per entry by studentId)
+  const [expandedWaitlistEntries, setExpandedWaitlistEntries] = useState<Set<string>>(new Set());
   const [selectedFilterMonth, setSelectedFilterMonth] = useState<number>(0);
   const [selectedFilterYear, setSelectedFilterYear] = useState<number>(2026);
   const [selectedFilterWeek, setSelectedFilterWeek] = useState<string>('all'); // 'all', 'monday', 'tuesday', etc.
@@ -243,6 +245,8 @@ const KYWashSystem = () => {
                 type: m.type,
                 status: m.status,
                 timeLeft: m.timeLeft,
+                // If server provides a timeLeft for a running machine, convert it into a finishTimestamp
+                finishTimestamp: m.status === 'running' && typeof m.timeLeft === 'number' ? Date.now() + m.timeLeft * 1000 : undefined,
                 mode: m.mode || null,
                 locked: m.locked,
                 userStudentId: m.userStudentId || null,
@@ -351,14 +355,16 @@ const KYWashSystem = () => {
                 id: parseInt(m.id),
                 type: m.type,
                 status: m.status,
-                // Preserve the local timer value if machine is running, use API value otherwise
+                // Preserve the local timer finishTimestamp if machine is running, otherwise derive from API timeLeft
+                finishTimestamp: prevMachine?.status === 'running' && prevMachine.finishTimestamp ? prevMachine.finishTimestamp : (m.status === 'running' && typeof m.timeLeft === 'number' ? Date.now() + m.timeLeft * 1000 : undefined),
+                // Keep a fallback numeric timeLeft for compatibility
                 timeLeft: prevMachine?.status === 'running' ? prevMachine.timeLeft : m.timeLeft,
                 mode: m.mode || null,
                 locked: m.locked,
                 userStudentId: m.userStudentId || null,
                 userPhone: m.userPhone || null,
                 originalDuration: m.originalDuration || undefined,
-              };
+              }; 
             });
           });
 
@@ -441,48 +447,44 @@ const KYWashSystem = () => {
     };
   }, []);
 
-  // Continuous local timer countdown for running machines
-  useEffect(() => {
-    machineTimerRef.current = setInterval(() => {
-      setMachines((prevMachines: Machine[]) => {
-        return prevMachines.map((machine: Machine) => {
-          // Only countdown machines that are actively running
-          if (machine.status === 'running' && machine.timeLeft > 0) {
-            const newTimeLeft = Math.max(0, machine.timeLeft - 1);
-            
-            // Check if machine just completed
-            if (newTimeLeft <= 0) {
-              // Emit completion event
-              if (socketRef.current?.emit) {
-                socketRef.current.emit('machine-complete', {
-                  machineId: String(machine.id),
-                  machineType: machine.type,
-                  studentId: machine.userStudentId,
-                });
-              }
-              // Transition to pending-collection so users can mark the clothes as collected.
-              return {
-                ...machine,
-                timeLeft: 0,
-                status: 'pending-collection'
-              };
-            }
-            
-            return { ...machine, timeLeft: newTimeLeft };
-          }
-          // Never change timeLeft for non-running machines
-          return machine;
-        });
-      });
-    }, 1000);
+  // Replace per-machine decrement with a single tick that computes remaining time from finishTimestamp.
+  // This avoids drift, prevents polling from stomping local timers, and centralizes completion handling.
+  const [nowTick, setNowTick] = useState<number>(Date.now());
 
-    return () => {
-      if (machineTimerRef.current) {
-        clearInterval(machineTimerRef.current);
-        machineTimerRef.current = null;
-      }
-    };
+  useEffect(() => {
+    const interval = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(interval);
   }, []);
+
+  // On every tick, check for running machines that have reached their finishTimestamp and transition them.
+  useEffect(() => {
+    setMachines((prevMachines: Machine[]) => {
+      let changed = false;
+      const updated = prevMachines.map((machine: Machine) => {
+        if (machine.status === 'running') {
+          const finishesAt = machine.finishTimestamp;
+          if (finishesAt && finishesAt <= Date.now()) {
+            changed = true;
+            // Emit completion event
+            if (socketRef.current?.emit) {
+              socketRef.current.emit('machine-complete', {
+                machineId: String(machine.id),
+                machineType: machine.type,
+                studentId: machine.userStudentId,
+              });
+            }
+
+            // Move to pending-collection to allow users to confirm collection
+            return { ...machine, status: 'pending-collection', timeLeft: 0, finishTimestamp: undefined };
+          }
+        }
+        return machine;
+      });
+
+      return changed ? updated : prevMachines;
+    });
+  }, [nowTick]);
+
 
   // Persist usage history to localStorage whenever it changes
   useEffect(() => {
@@ -708,6 +710,15 @@ const KYWashSystem = () => {
   // Track machines that have already sent 5-minute reminder
   const reminderSentRef = useRef<Set<string>>(new Set());
 
+  // Helper to compute seconds left for display (normalizes between finishTimestamp and legacy timeLeft)
+  const getTimeLeftSeconds = (machine: Machine): number => {
+    if (machine.finishTimestamp) {
+      return Math.max(0, Math.ceil((machine.finishTimestamp - Date.now()) / 1000));
+    }
+
+    return machine.timeLeft || 0;
+  }; 
+
   // Monitor for completion and trigger notifications with alarm sound
   useEffect(() => {
     machines.forEach((machine) => {
@@ -715,7 +726,8 @@ const KYWashSystem = () => {
       
       // Check for 5-minute reminder (300 seconds = 5 minutes)
       // Only send to user actively using this machine
-      if (machine.status === 'running' && machine.timeLeft === 300 && !reminderSentRef.current.has(machineKey)) {
+      const secondsLeft = getTimeLeftSeconds(machine);
+      if (machine.status === 'running' && secondsLeft === 300 && !reminderSentRef.current.has(machineKey)) {
         if (machine.userStudentId === user?.studentId) {
           reminderSentRef.current.add(machineKey);
           playNotificationSound();
@@ -744,7 +756,7 @@ const KYWashSystem = () => {
         notifiedMachinesRef.current.delete(machineKey);
         reminderSentRef.current.delete(machineKey);
         stopContinuousNotificationRing();
-      }
+      } 
     });
   }, [machines, user?.studentId]);
 
@@ -1070,6 +1082,8 @@ const KYWashSystem = () => {
             ...machine,
             status: 'running',
             timeLeft: mode.duration * 60,
+            // canonical finish time used for all clients
+            finishTimestamp: Date.now() + mode.duration * 60 * 1000,
             mode: mode.name,
             userStudentId: user.studentId,
             userPhone: user.phoneNumber,
@@ -1132,7 +1146,7 @@ const KYWashSystem = () => {
 
     setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
       machine.id === machineId && machine.type === machineType
-        ? { ...machine, status: 'available', timeLeft: 0, mode: null, userStudentId: null, userPhone: null, originalDuration: undefined, collectionStatus: null }
+        ? { ...machine, status: 'available', timeLeft: 0, finishTimestamp: undefined, mode: null, userStudentId: null, userPhone: null, originalDuration: undefined, collectionStatus: null }
         : machine
     ));
     showNotification('Machine cancelled. Spending not recorded.');
@@ -2504,9 +2518,9 @@ const KYWashSystem = () => {
                     {machine.status === 'running' && !machine.locked && (
                       <>
                         <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>User: {machine.userStudentId}</p>
-                        <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Time Left: {formatTime(machine.timeLeft)}</p>
+                        <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Time Left: {formatTime(getTimeLeftSeconds(machine))}</p>
                       </>
-                    )}
+                    )} 
                   </div>
                 ))}
               </div>
@@ -2530,7 +2544,7 @@ const KYWashSystem = () => {
                   ) : (
                     <div className="space-y-2">
                       {waitlists.washers.map((entry: WaitlistEntry, idx: number) => (
-                        <div key={`washer-waitlist-${entry.studentId}-${idx}`} className={`p-3 rounded-lg border transition-colors ${
+                        <div key={entry.studentId} className={`p-3 rounded-lg border transition-colors ${
                           darkMode ? 'bg-gray-700 border-gray-600' : 'bg-gray-100 border-gray-300'
                         }`}>
                           <p className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-800'}`}>
@@ -2553,7 +2567,7 @@ const KYWashSystem = () => {
                   ) : (
                     <div className="space-y-2">
                       {waitlists.dryers.map((entry: WaitlistEntry, idx: number) => (
-                        <div key={`dryer-waitlist-${entry.studentId}-${idx}`} className={`p-3 rounded-lg border transition-colors ${
+                        <div key={entry.studentId} className={`p-3 rounded-lg border transition-colors ${
                           darkMode ? 'bg-gray-700 border-gray-600' : 'bg-gray-100 border-gray-300'
                         }`}>
                           <p className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-800'}`}>
@@ -3118,8 +3132,11 @@ const KYWashSystem = () => {
                     <p className={`${darkMode ? 'text-gray-400' : 'text-blue-700'}`}>No one is waiting for washers</p>
                   ) : (
                     <div className="space-y-2">
-                      {waitlists.washers.map((entry: WaitlistEntry, idx: number) => (
-                        <div key={`${entry.studentId}-${idx}`} className={`p-3 rounded-lg border transition-colors ${
+                      {waitlists.washers.map((entry: WaitlistEntry, idx: number) => {
+                        const entryKey = entry.studentId;
+                        const expanded = expandedWaitlistEntries.has(entryKey);
+                        return (
+                        <div key={entry.studentId} className={`p-3 rounded-lg border transition-colors ${
                           darkMode ? 'bg-gray-700 border-gray-600' : 'bg-white border-blue-200'
                         }`}>
                           <div className="flex justify-between items-start">
@@ -3132,15 +3149,19 @@ const KYWashSystem = () => {
                               </p>
                             </div>
                             <button
-                              onClick={() => setShowWasherWaitlist(!showWasherWaitlist)}
+                              onClick={() => {
+                                const updated = new Set(expandedWaitlistEntries);
+                                if (expanded) updated.delete(entryKey); else updated.add(entryKey);
+                                setExpandedWaitlistEntries(updated);
+                              }}
                               className={`text-sm px-3 py-1 rounded transition-colors ${
-                                showWasherWaitlist ? darkMode ? 'bg-blue-900 text-blue-300' : 'bg-blue-200 text-blue-900' : darkMode ? 'bg-gray-600 text-gray-300' : 'bg-gray-200 text-gray-700'
+                                expanded ? (darkMode ? 'bg-blue-900 text-blue-300' : 'bg-blue-200 text-blue-900') : (darkMode ? 'bg-gray-600 text-gray-300' : 'bg-gray-200 text-gray-700')
                               }`}
                             >
-                              {showWasherWaitlist ? 'Hide' : 'Details'}
+                              {expanded ? 'Hide' : 'Details'}
                             </button>
                           </div>
-                          {showWasherWaitlist && (
+                          {expanded && (
                             <div className={`mt-2 pt-2 border-t ${darkMode ? 'border-gray-600' : 'border-blue-200'}`}>
                               <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                                 <span className="font-medium">Phone:</span> {entry.phone}
@@ -3148,7 +3169,7 @@ const KYWashSystem = () => {
                             </div>
                           )}
                         </div>
-                      ))}
+                      )})} 
                     </div>
                   )}
                   
@@ -3196,8 +3217,11 @@ const KYWashSystem = () => {
                     <p className={`${darkMode ? 'text-gray-400' : 'text-purple-700'}`}>No one is waiting for dryers</p>
                   ) : (
                     <div className="space-y-2">
-                      {waitlists.dryers.map((entry: WaitlistEntry, idx: number) => (
-                        <div key={`${entry.studentId}-${idx}`} className={`p-3 rounded-lg border transition-colors ${
+                      {waitlists.dryers.map((entry: WaitlistEntry, idx: number) => {
+                        const entryKey = entry.studentId;
+                        const expanded = expandedWaitlistEntries.has(entryKey);
+                        return (
+                        <div key={entry.studentId} className={`p-3 rounded-lg border transition-colors ${
                           darkMode ? 'bg-gray-700 border-gray-600' : 'bg-white border-purple-200'
                         }`}>
                           <div className="flex justify-between items-start">
@@ -3210,15 +3234,19 @@ const KYWashSystem = () => {
                               </p>
                             </div>
                             <button
-                              onClick={() => setShowDryerWaitlist(!showDryerWaitlist)}
+                              onClick={() => {
+                                const updated = new Set(expandedWaitlistEntries);
+                                if (expanded) updated.delete(entryKey); else updated.add(entryKey);
+                                setExpandedWaitlistEntries(updated);
+                              }}
                               className={`text-sm px-3 py-1 rounded transition-colors ${
-                                showDryerWaitlist ? darkMode ? 'bg-purple-900 text-purple-300' : 'bg-purple-200 text-purple-900' : darkMode ? 'bg-gray-600 text-gray-300' : 'bg-gray-200 text-gray-700'
+                                expanded ? (darkMode ? 'bg-purple-900 text-purple-300' : 'bg-purple-200 text-purple-900') : (darkMode ? 'bg-gray-600 text-gray-300' : 'bg-gray-200 text-gray-700')
                               }`}
                             >
-                              {showDryerWaitlist ? 'Hide' : 'Details'}
+                              {expanded ? 'Hide' : 'Details'}
                             </button>
                           </div>
-                          {showDryerWaitlist && (
+                          {expanded && (
                             <div className={`mt-2 pt-2 border-t ${darkMode ? 'border-gray-600' : 'border-purple-200'}`}>
                               <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                                 <span className="font-medium">Phone:</span> {entry.phone}
@@ -3226,7 +3254,7 @@ const KYWashSystem = () => {
                             </div>
                           )}
                         </div>
-                      ))}
+                      )})} 
                     </div>
                   )}
                   
@@ -3300,7 +3328,7 @@ const KYWashSystem = () => {
                             <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>User: {machine.userStudentId}</p>
                             <p className={`text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Phone: {machine.userPhone}</p>
                             <p className={`text-2xl font-bold text-center py-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
-                              {formatTime(machine.timeLeft)}
+                              {formatTime(getTimeLeftSeconds(machine))}
                             </p>
                             {machine.userStudentId === user?.studentId && (
                               <button
@@ -3454,7 +3482,7 @@ const KYWashSystem = () => {
                             <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>User: {machine.userStudentId}</p>
                             <p className={`text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Phone: {machine.userPhone}</p>
                             <p className={`text-2xl font-bold text-center py-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
-                              {formatTime(machine.timeLeft)}
+                              {formatTime(getTimeLeftSeconds(machine))}
                             </p>
                             {machine.userStudentId === user?.studentId && (
                               <button
