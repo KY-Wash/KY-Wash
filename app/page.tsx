@@ -963,7 +963,21 @@ const KYWashSystem = () => {
           const { data: userRow, error: fetchErr } = await supabase.from('users').select('phone_number').eq('student_id', studentId).maybeSingle();
           if (fetchErr) console.warn('Could not fetch user phone from DB:', fetchErr.message || fetchErr);
 
-          const registeredPhone = userRow?.phone_number || '';
+          let registeredPhone = userRow?.phone_number || '';
+
+          // If Supabase didn't return phone (RLS or eventual consistency), try server state as a fallback
+          if (!registeredPhone) {
+            try {
+              const resp = await fetch('/api/state');
+              if (resp.ok) {
+                const s = await resp.json();
+                const u = (s.users || []).find((x: any) => x.studentId === studentId || x.student_id === studentId);
+                registeredPhone = u?.phoneNumber || u?.phone || '';
+              }
+            } catch (err) {
+              console.warn('Could not fetch phone from server state fallback:', err);
+            }
+          }
 
           // Login successful
           setUser({ studentId, phoneNumber: registeredPhone });
@@ -1474,8 +1488,8 @@ const KYWashSystem = () => {
       studentId: user.studentId,
       message: chatMessage.trim(),
       timestamp: Date.now(),
-      date: now.toLocaleDateString(),
-      time: now.toLocaleTimeString(),
+      date: now.toLocaleDateString('en-GB', { timeZone: 'Asia/Kuala_Lumpur' }),
+      time: now.toLocaleTimeString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', hour: '2-digit', minute: '2-digit', second: '2-digit' }),
     };
 
     setCommunityChat((prev: ChatMessage[]) => [...prev, newMessage]);

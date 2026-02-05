@@ -168,14 +168,17 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         const { data: chatData, error: chatErr } = await svc.from('community_chat').select('*').order('created_at', { ascending: true }).limit(100);
         if (!chatErr && chatData) {
           const state = getAppState();
-          state.communityChat = (chatData as any[]).map(c => ({
-            id: c.id,
-            studentId: c.student_id || '',
-            message: c.message,
-            timestamp: new Date(c.created_at).getTime(),
-            date: new Date(c.created_at).toLocaleDateString(),
-            time: new Date(c.created_at).toLocaleTimeString(),
-          }));
+          state.communityChat = (chatData as any[]).map(c => {
+            const d = new Date(c.created_at);
+            return {
+              id: c.id,
+              studentId: c.student_id || '',
+              message: c.message,
+              timestamp: d.getTime(),
+              date: d.toLocaleDateString('en-GB', { timeZone: 'Asia/Kuala_Lumpur' }),
+              time: d.toLocaleTimeString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            };
+          });
         }
 
         const { data: fbData, error: fbErr } = await svc.from('feedback_issues').select('*').order('created_at', { ascending: true }).limit(200);
@@ -764,8 +767,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             studentId: data.studentId,
             message: data.message,
             timestamp: Date.now(),
-            date: now.toLocaleDateString(),
-            time: now.toLocaleTimeString(),
+            date: now.toLocaleDateString('en-GB', { timeZone: 'Asia/Kuala_Lumpur' }),
+            time: now.toLocaleTimeString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', hour: '2-digit', minute: '2-digit', second: '2-digit' }),
           };
           if (!state.communityChat) {
             state.communityChat = [];
