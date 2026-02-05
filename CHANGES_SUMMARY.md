@@ -8,7 +8,7 @@ This document summarizes all the improvements made to the KY Wash platform in th
 ### 1. **User Guide Tab Added** ✅
 - New "📖 User Guide" button added to the user navigation menu
 - Comprehensive guide with 4 main sections:
-  1. **Starting a Washer or Dryer** - Instructions on how to use machines
+  1. **Startingdw a Washer or Dryer** - Instructions on how to use machines
   2. **Joining the Waitlist** - Explanation of the waitlist system
   3. **Collecting Your Clothes** - Steps to complete a cycle
   4. **Marking a Machine as Empty** - Community-driven machine status updates
