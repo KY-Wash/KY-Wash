@@ -644,12 +644,50 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
               phoneNumber: data.phone,
             });
 
-            // Persist user record to Supabase `users` table (do NOT store passwords in the table)
+            // Persist user record to Supabase `users` table and create auth user via service role
             (async () => {
               try {
                 const svc = getServiceSupabaseClient();
                 if (svc) {
-                  await svc.from('users').insert([{ student_id: data.studentId, phone_number: data.phone }]);
+                  const email = `${data.studentId}@kywash.local`;
+
+                  // Try to create an auth user server-side using the service role to avoid sending confirmation emails
+                  try {
+                    // Use any cast to avoid typing friction with different supabase-js versions
+                    const adminCreate: any = (svc.auth as any)?.admin?.createUser
+                      ? (svc.auth as any).admin.createUser
+                      : null;
+
+                    if (adminCreate) {
+                      // Create user and mark as confirmed to avoid sending emails
+                      const res: any = await (svc.auth as any).admin.createUser({
+                        email,
+                        password: data.password,
+                        user_metadata: { student_id: data.studentId, phone_number: data.phone },
+                        // Some Supabase versions accept email_confirm; include it where supported
+                        email_confirm: true,
+                      });
+
+                      if (res?.error) {
+                        console.warn('Admin createUser returned error, falling back to inserting into users table:', res.error);
+                        await svc.from('users').insert([{ student_id: data.studentId, phone_number: data.phone }]);
+                      } else {
+                        const createdUserId = res?.user?.id || res?.data?.id || null;
+                        if (createdUserId) {
+                          await svc.from('users').insert([{ id: createdUserId, email, student_id: data.studentId, phone_number: data.phone }]);
+                        } else {
+                          // If we couldn't get created user id, insert minimally
+                          await svc.from('users').insert([{ student_id: data.studentId, phone_number: data.phone }]);
+                        }
+                      }
+                    } else {
+                      // No admin.createUser support; fall back to inserting into users table
+                      await svc.from('users').insert([{ student_id: data.studentId, phone_number: data.phone }]);
+                    }
+                  } catch (err) {
+                    console.error('Failed to create auth user via admin API, inserting users table entry as fallback:', err);
+                    await svc.from('users').insert([{ student_id: data.studentId, phone_number: data.phone }]);
+                  }
                 } else {
                   console.warn('Service Supabase client not configured; skipping user persistence.');
                 }

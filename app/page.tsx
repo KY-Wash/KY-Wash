@@ -907,6 +907,8 @@ const KYWashSystem = () => {
       return;
     }
 
+  
+
     const email = `${studentId}@kywash.local`;
 
     if (isRegistering) {
@@ -924,16 +926,14 @@ const KYWashSystem = () => {
 
       try {
         setLoading(true);
-        if (supabase) {
-          const { error } = await supabase.auth.signUp({ email, password, options: { emailRedirectTo: window.location.origin } });
-          if (error) throw error;
-        }
 
-        // Persist user (omit password) to server state & DB
+        // Persist user (include password) to server state & DB using socket event
+        // Server will create the Supabase auth user using the service role to avoid sending confirmation emails
         if (socketRef.current?.emit) {
           socketRef.current.emit('user-register', {
             studentId,
             phone: phoneNumber,
+            password,
           });
         }
 
@@ -944,7 +944,7 @@ const KYWashSystem = () => {
         setPhoneNumber('');
         setPassword('');
         setIsRegistering(false);
-        showNotification('Account created successfully! Please verify your email if prompted.');
+        showNotification('Account created successfully!');
       } catch (err) {
         console.error('Registration failed:', err);
         setError(err instanceof Error ? err.message : 'Registration failed');
