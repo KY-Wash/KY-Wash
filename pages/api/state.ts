@@ -195,6 +195,36 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           }));
         }
 
+        // Seed founders table to state
+        const { data: foundersData, error: foundersErr } = await svc.from('founders').select('*').order('created_at', { ascending: true }).limit(200);
+        if (!foundersErr && foundersData) {
+          const state = getAppState();
+          state.founders = (foundersData as any[]).map(f => ({
+            id: f.id,
+            name: f.name,
+            scholarship: f.scholarship,
+            course: f.course,
+            profileImage: f.profile_image || '',
+          }));
+        }
+
+        // Seed audit logs
+        const { data: auditData, error: auditErr } = await svc.from('audit_logs').select('*').order('created_at', { ascending: true }).limit(500);
+        if (!auditErr && auditData) {
+          const state = getAppState();
+          state.auditLog = (auditData as any[]).map(a => ({
+            id: a.id,
+            action: a.action,
+            machineType: a.machine_type,
+            machineId: a.machine_id,
+            initiatedBy: a.initiated_by,
+            reason: a.reason || null,
+            timestamp: a.timestamp || Date.now(),
+            date: new Date(a.created_at).toLocaleDateString(),
+            time: new Date(a.created_at).toLocaleTimeString(),
+          }));
+        }
+
         // Persist back to state file
         updateAppState(getAppState());
       } catch (err) {
@@ -261,8 +291,35 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             };
             state.usageHistory.push(usageRecord);
             
-            // Sync to Supabase
+            // Sync to Supabase (REST helper)
             syncUsageRecordToSupabase(usageRecord);
+
+            // Persist machine row and link user (if found) using service-role client
+            (async () => {
+              try {
+                const svc = getServiceSupabaseClient();
+                if (svc) {
+                  // Try to resolve user id from users table
+                  const userRes = await svc.from('users').select('id').eq('student_id', data.studentId).maybeSingle();
+                  const userUuid = userRes.data?.id || null;
+
+                  await svc.from('machines').upsert([
+                    {
+                      id: data.machineId,
+                      type: data.machineType,
+                      status: 'running',
+                      time_left: durationInSeconds,
+                      mode: data.mode,
+                      locked: false,
+                      user_id: userUuid,
+                      original_duration: data.duration,
+                    }
+                  ], { onConflict: ['type','id'] });
+                }
+              } catch (err) {
+                console.error('Failed to persist machine start to Supabase:', err);
+              }
+            })();
             
             // Automatically remove user from both waitlists when they start a machine
             state.waitlists.washers = state.waitlists.washers.filter(
@@ -308,6 +365,18 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             machine.mode = '';
             machine.userStudentId = '';
             machine.userPhone = '';
+
+            // Persist machine reset to Supabase
+            (async () => {
+              try {
+                const svc = getServiceSupabaseClient();
+                if (svc) {
+                  await svc.from('machines').update({ status: 'available', time_left: 0, user_id: null, mode: null }).match({ type: data.machineType, id: data.machineId });
+                }
+              } catch (err) {
+                console.error('Failed to persist machine cancellation to Supabase:', err);
+              }
+            })();
           }
           break;
         }
@@ -319,6 +388,18 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
               studentId: data.studentId,
               phone: data.phoneNumber,
             });
+
+            // Persist to waitlist_entries table
+            (async () => {
+              try {
+                const svc = getServiceSupabaseClient();
+                if (svc) {
+                  await svc.from('waitlist_entries').insert([{ student_id: data.studentId, phone: data.phoneNumber, machine_type: data.machineType }]);
+                }
+              } catch (err) {
+                console.error('Failed to persist waitlist entry to Supabase:', err);
+              }
+            })();
           }
           break;
         }
@@ -328,12 +409,25 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           state.waitlists[waitlistKey] = state.waitlists[waitlistKey].filter(
             (entry) => entry.studentId !== data.studentId
           );
+
+          // Remove from waitlist_entries table
+          (async () => {
+            try {
+              const svc = getServiceSupabaseClient();
+              if (svc) {
+                await svc.from('waitlist_entries').delete().eq('student_id', data.studentId).eq('machine_type', data.machineType);
+              }
+            } catch (err) {
+              console.error('Failed to remove waitlist entry from Supabase:', err);
+            }
+          })();
+
           break;
         }
 
         case 'issue-report': {
           const now = new Date();
-          state.reportedIssues.push({
+          const newIssue = {
             id: `${Date.now()}-${Math.random()}`,
             machineType: data.machineType,
             machineId: data.machineId,
@@ -343,7 +437,30 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             timestamp: now.getTime(),
             date: now.toLocaleDateString(),
             resolved: false,
-          });
+          };
+
+          state.reportedIssues.push(newIssue);
+
+          // Persist reported issue to Supabase
+          (async () => {
+            try {
+              const svc = getServiceSupabaseClient();
+              if (svc) {
+                await svc.from('reported_issues').insert([{
+                  machine_type: data.machineType,
+                  machine_id: data.machineId,
+                  reported_by: data.reportedBy,
+                  phone: data.phone,
+                  description: data.description,
+                  timestamp: now.getTime(),
+                  date: now.toLocaleDateString(),
+                }]);
+              }
+            } catch (err) {
+              console.error('Failed to persist reported issue to Supabase:', err);
+            }
+          })();
+
           break;
         }
 
@@ -351,17 +468,55 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           const issue = state.reportedIssues.find((i) => i.id === data.issueId);
           if (issue) {
             issue.resolved = data.resolved;
+
+            // Persist resolve state to Supabase
+            (async () => {
+              try {
+                const svc = getServiceSupabaseClient();
+                if (svc) {
+                  await svc.from('reported_issues').update({ resolved: data.resolved }).eq('id', data.issueId);
+                }
+              } catch (err) {
+                console.error('Failed to update reported issue resolved state in Supabase:', err);
+              }
+            })();
           }
           break;
         }
 
         case 'issue-delete': {
           state.reportedIssues = state.reportedIssues.filter((i) => i.id !== data.issueId);
+
+          // Persist deletion to Supabase
+          (async () => {
+            try {
+              const svc = getServiceSupabaseClient();
+              if (svc) {
+                await svc.from('reported_issues').delete().eq('id', data.issueId);
+              }
+            } catch (err) {
+              console.error('Failed to delete reported issue from Supabase:', err);
+            }
+          })();
+
           break;
         }
 
         case 'usage-history-delete': {
           state.usageHistory = state.usageHistory.filter((record) => record.id !== data.recordId);
+
+          // Persist deletion to Supabase
+          (async () => {
+            try {
+              const svc = getServiceSupabaseClient();
+              if (svc) {
+                await svc.from('usage_history').delete().eq('id', data.recordId);
+              }
+            } catch (err) {
+              console.error('Failed to delete usage history from Supabase:', err);
+            }
+          })();
+
           break;
         }
 
@@ -371,6 +526,18 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           );
           if (machine) {
             machine.locked = data.locked;
+
+            // Persist lock state to machines table
+            (async () => {
+              try {
+                const svc = getServiceSupabaseClient();
+                if (svc) {
+                  await svc.from('machines').update({ locked: data.locked, status: data.locked ? 'maintenance' : 'available' }).match({ type: data.machineType, id: data.machineId });
+                }
+              } catch (err) {
+                console.error('Failed to persist machine lock to Supabase:', err);
+              }
+            })();
           }
           break;
         }
@@ -417,6 +584,27 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             // Clear any pending collection status for this machine
             if (!state.machineCollectionStatus) state.machineCollectionStatus = {};
             delete state.machineCollectionStatus[`${data.machineType}-${data.machineId}`];
+
+            // Persist changes: mark usage history Completed and update machines table
+            (async () => {
+              try {
+                // Mark usage record Completed in Supabase
+                updateSupabaseRecordStatus(data.studentId, data.machineType, data.machineId, 'Completed');
+
+                const svc = getServiceSupabaseClient();
+                if (svc) {
+                  await svc.from('machines').update({ status: 'available', time_left: 0, user_id: null, mode: null }).match({ type: data.machineType, id: data.machineId });
+
+                  // Also insert a machine_collections record for audit
+                  await svc.from('machine_collections').insert([{ machine_type: data.machineType, machine_id: data.machineId, status: 'collected' }]);
+
+                  // Insert audit log entry for clothes-collected
+                  await svc.from('audit_logs').insert([{ action: 'clothes-collected', machine_type: data.machineType, machine_id: data.machineId, initiated_by: data.studentId, timestamp: Date.now() }]);
+                }
+              } catch (err) {
+                console.error('Failed to persist clothes-collected actions to Supabase:', err);
+              }
+            })();
           }
           break;
         }
@@ -432,17 +620,101 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             if (data.status !== 'running') {
               stopServerTimer(data.machineId, data.machineType);
             }
+
+            // Persist admin change to machines table
+            (async () => {
+              try {
+                const svc = getServiceSupabaseClient();
+                if (svc) {
+                  await svc.from('machines').update({ status: data.status, locked: data.status === 'maintenance' }).match({ type: data.machineType, id: data.machineId });
+                }
+              } catch (err) {
+                console.error('Failed to persist admin machine update to Supabase:', err);
+              }
+            })();
           }
           break;
         }
 
         case 'user-register': {
           if (!state.users.some(u => u.studentId === data.studentId)) {
+            // Store only non-sensitive info in state
             state.users.push({
               studentId: data.studentId,
               phoneNumber: data.phone,
-              password: data.password,
             });
+
+            // Persist user record to Supabase `users` table (do NOT store passwords in the table)
+            (async () => {
+              try {
+                const svc = getServiceSupabaseClient();
+                if (svc) {
+                  await svc.from('users').insert([{ student_id: data.studentId, phone_number: data.phone }]);
+                } else {
+                  console.warn('Service Supabase client not configured; skipping user persistence.');
+                }
+              } catch (err) {
+                console.error('Failed to persist new user to Supabase users table:', err);
+              }
+            })();
+          }
+          break;
+        }
+
+        case 'audit-log': {
+          // Persist audit log entries to Supabase and keep in server state
+          const auditEntry = data;
+          if (!state.auditLog) state.auditLog = [];
+          state.auditLog.push(auditEntry);
+
+          (async () => {
+            try {
+              const svc = getServiceSupabaseClient();
+              if (svc) {
+                await svc.from('audit_logs').insert([{
+                  action: auditEntry.action,
+                  machine_type: auditEntry.machineType,
+                  machine_id: auditEntry.machineId,
+                  initiated_by: auditEntry.initiatedBy,
+                  reason: auditEntry.reason || null,
+                  timestamp: auditEntry.timestamp,
+                }]);
+              }
+            } catch (err) {
+              console.error('Failed to insert audit log into Supabase:', err);
+            }
+          })();
+
+          break;
+        }
+
+        case 'founder-add': {
+          try {
+            const now = new Date();
+            const founderPayload = {
+              name: data.name,
+              scholarship: data.scholarship,
+              course: data.course,
+              profile_image: data.profile_image || null,
+              created_at: new Date().toISOString(),
+            };
+
+            if (!state.founders) state.founders = [];
+            // Keep a local representation (id will come from DB)
+            state.founders.push({ id: `founder-${Date.now()}-${Math.random()}`, name: data.name, scholarship: data.scholarship, course: data.course, profileImage: data.profile_image || '' });
+
+            (async () => {
+              try {
+                const svc = getServiceSupabaseClient();
+                if (svc) {
+                  await svc.from('founders').insert([founderPayload]);
+                }
+              } catch (err) {
+                console.error('Failed to persist founder to Supabase:', err);
+              }
+            })();
+          } catch (err) {
+            console.error('Error handling founder-add event:', err);
           }
           break;
         }
@@ -489,6 +761,21 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
           if (status === 'coming') {
             state.machineCollectionStatus[key] = { status: 'coming', user: studentId };
+
+            // Persist collection 'coming' status
+            (async () => {
+              try {
+                const svc = getServiceSupabaseClient();
+                if (svc) {
+                  const userRes = await svc.from('users').select('id').eq('student_id', studentId).maybeSingle();
+                  const userUuid = userRes.data?.id || null;
+                  await svc.from('machine_collections').insert([{ machine_type: machineType, machine_id: machineId, status: 'coming', user_id: userUuid }]);
+                }
+              } catch (err) {
+                console.error('Failed to persist machine collection (coming) to Supabase:', err);
+              }
+            })();
+
           } else if (status === 'collected') {
             // Accept collected reports from anyone - mark usage completed and free machine
             // Find in-progress usage record and mark Completed
@@ -510,6 +797,27 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             }
 
             delete state.machineCollectionStatus[key];
+
+            // Persist collection record and update usage status in Supabase
+            (async () => {
+              try {
+                const svc = getServiceSupabaseClient();
+                if (svc) {
+                  // Insert collection record
+                  await svc.from('machine_collections').insert([{ machine_type: machineType, machine_id: machineId, status: 'collected' }]);
+
+                  // Mark corresponding usage history as Completed in Supabase
+                  if (historyRecord && historyRecord.studentId) {
+                    updateSupabaseRecordStatus(historyRecord.studentId, machineType, machineId, 'Completed');
+                  }
+
+                  // Update machines table to available
+                  await svc.from('machines').update({ status: 'available', time_left: 0, user_id: null, mode: null }).match({ type: machineType, id: machineId });
+                }
+              } catch (err) {
+                console.error('Failed to persist machine collection (collected) to Supabase:', err);
+              }
+            })();
           }
           break;
         }

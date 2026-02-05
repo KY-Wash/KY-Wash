@@ -2,7 +2,8 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Waves, Loader2, Clock, Users, AlertCircle, LogOut, Settings, ChevronDown, ChevronUp, Lock, Unlock, History, TrendingUp, X, Edit2, BarChart3, Trash2 } from 'lucide-react';
-import { insertUsageRecord, updateUsageRecordStatus } from '@/lib/supabase';
+import Image from 'next/image';
+import { insertUsageRecord, updateUsageRecordStatus, supabase } from '@/lib/supabase';
 
 interface User {
   studentId: string;
@@ -895,7 +896,7 @@ const KYWashSystem = () => {
   const validatePhone = (phone: string): boolean => /^\d{10,11}$/.test(phone);
   const validatePassword = (pass: string): boolean => /^\d{8}$/.test(pass);
 
-  const handleLogin = (): void => {
+  const handleLogin = async (): Promise<void> => {
     setError('');
     if (!validateStudentId(studentId)) {
       setError('Student ID must be 6 digits');
@@ -910,23 +911,30 @@ const KYWashSystem = () => {
       return;
     }
 
+    const email = `${studentId}@kywash.local`;
+
     if (isRegistering) {
-      // REGISTRATION MODE
+      // REGISTRATION MODE using Supabase Auth
       if (users.some(u => u.studentId === studentId)) {
         setError('This Student ID is already registered. Please login instead.');
         return;
       }
-      
-      // Register new user
-      if (socketRef.current?.emit) {
-        socketRef.current.emit('user-register', {
-          studentId,
-          phone: phoneNumber,
-          password,
-        });
-      }
-      setLoading(true);
-      setTimeout(() => {
+
+      try {
+        setLoading(true);
+        if (supabase) {
+          const { error } = await supabase.auth.signUp({ email, password, options: { emailRedirectTo: window.location.origin } });
+          if (error) throw error;
+        }
+
+        // Persist user (omit password) to server state & DB
+        if (socketRef.current?.emit) {
+          socketRef.current.emit('user-register', {
+            studentId,
+            phone: phoneNumber,
+          });
+        }
+
         setUser({ studentId, phoneNumber });
         setShowLogin(false);
         setCurrentView('main');
@@ -934,42 +942,71 @@ const KYWashSystem = () => {
         setPhoneNumber('');
         setPassword('');
         setIsRegistering(false);
+        showNotification('Account created successfully! Please verify your email if prompted.');
+      } catch (err) {
+        console.error('Registration failed:', err);
+        setError(err instanceof Error ? err.message : 'Registration failed');
+      } finally {
         setLoading(false);
-        showNotification('Account created successfully!');
-      }, 500);
+      }
     } else {
-      // LOGIN MODE
-      const userRecord = users.find(u => u.studentId === studentId);
-      
-      if (!userRecord) {
-        setError('Student ID not found. Please create a new account.');
-        return;
-      }
-      
-      // Validate phone number
-      if (userRecord.phoneNumber !== phoneNumber) {
-        setError('Phone number is incorrect for this account.');
-        return;
-      }
-      
-      // Validate password
-      if (userRecord.password !== password) {
-        setError('Password is incorrect.');
-        return;
-      }
-      
-      // Login successful
-      setLoading(true);
-      setTimeout(() => {
-        setUser({ studentId, phoneNumber });
-        setShowLogin(false);
-        setCurrentView('main');
-        setStudentId('');
-        setPhoneNumber('');
-        setPassword('');
+      // LOGIN MODE using Supabase Auth
+      try {
+        setLoading(true);
+        if (supabase) {
+          const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+          if (signInError) throw signInError;
+
+          // Fetch user's phone from `users` table and validate
+          const { data: userRow, error: fetchErr } = await supabase.from('users').select('phone_number').eq('student_id', studentId).maybeSingle();
+          if (fetchErr) console.warn('Could not fetch user phone from DB:', fetchErr.message || fetchErr);
+
+          const registeredPhone = userRow?.phone_number || phoneNumber;
+          if (registeredPhone !== phoneNumber) {
+            // Sign out if phone mismatch
+            await supabase.auth.signOut();
+            setError('Phone number does not match our records.');
+            return;
+          }
+
+          // Login successful
+          setUser({ studentId, phoneNumber: registeredPhone });
+          setShowLogin(false);
+          setCurrentView('main');
+          setStudentId('');
+          setPhoneNumber('');
+          setPassword('');
+          showNotification('Login successful!');
+        } else {
+          // Fallback to in-memory auth (legacy)
+          const userRecord = users.find(u => u.studentId === studentId);
+          if (!userRecord) {
+            setError('Student ID not found. Please create a new account.');
+            return;
+          }
+          if (userRecord.phoneNumber !== phoneNumber) {
+            setError('Phone number is incorrect for this account.');
+            return;
+          }
+          if ((userRecord as any).password && (userRecord as any).password !== password) {
+            setError('Password is incorrect.');
+            return;
+          }
+
+          setUser({ studentId, phoneNumber });
+          setShowLogin(false);
+          setCurrentView('main');
+          setStudentId('');
+          setPhoneNumber('');
+          setPassword('');
+          showNotification('Login successful (offline mode)!');
+        }
+      } catch (err) {
+        console.error('Login failed:', err);
+        setError(err instanceof Error ? err.message : 'Login failed');
+      } finally {
         setLoading(false);
-        showNotification('Login successful!');
-      }, 500);
+      }
     }
   };
 
@@ -1397,6 +1434,17 @@ const KYWashSystem = () => {
     };
 
     setFounders((prev: Founder[]) => [...prev, newFounder]);
+
+    // Emit to server to persist into Supabase
+    if (socketRef.current?.emit) {
+      socketRef.current.emit('founder-add', {
+        name: newFounder.name,
+        scholarship: newFounder.scholarship,
+        course: newFounder.course,
+        profile_image: newFounder.profileImage,
+      });
+    }
+
     showNotification('Founder added successfully!');
     setShowFoundersForm(false);
     setFounderName('');
@@ -1907,7 +1955,9 @@ const KYWashSystem = () => {
       <header className={`shadow-md transition-colors ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
         <div className="max-w-6xl mx-auto px-4 py-4 flex justify-between items-center">
           <div className="flex items-center gap-2">
-            <Waves className="w-8 h-8 text-blue-600" />
+            <div className="relative w-10 h-10">
+              <Image src="/KYWashLogo.jpeg" alt="KY Wash Logo" fill className="object-contain rounded-md" priority />
+            </div>
             <span className="text-2xl font-bold text-blue-600">KY Wash</span>
           </div>
           {user && (
