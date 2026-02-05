@@ -3,7 +3,7 @@
 ## ✅ Bug Fix Status: COMPLETE
 
 ### Bug #1: "Report No One" Button - FIXED
-- **Problem**: Timer freezes, machine doesn't reset to available x zx
+- **Problem**: Timer freezes, machine doesn't reset to available
 - **Root Cause**: `reportNoOne()` function not awaiting backend response
 - **Fix Applied**: ds
   - Changed to `async` function returning `Promise<void>`
