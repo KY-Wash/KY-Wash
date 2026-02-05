@@ -157,7 +157,7 @@ setMachines((prevMachines) => {
 #### B. Refactored `reportNoOne()` Function (lines 1088-1167)
 
 **Before**: 
-- 3 separate state updates (setMachines, setUsageHistory, setLockedMachines)
+- 3 separate state updates/ (setMachines, setUsageHistory, setLockedMachines)
 - 2 event /emissions ('no-one-report' + 'machine-force-stop')
 - Race conditions between updates
 
