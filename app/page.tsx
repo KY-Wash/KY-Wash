@@ -355,9 +355,7 @@ const KYWashSystem = () => {
                 id: parseInt(m.id),
                 type: m.type,
                 status: m.status,
-                // Preserve the local timer finishTimestamp if machine is running, otherwise derive from API timeLeft
-                finishTimestamp: prevMachine?.status === 'running' && prevMachine.finishTimestamp ? prevMachine.finishTimestamp : (m.status === 'running' && typeof m.timeLeft === 'number' ? Date.now() + m.timeLeft * 1000 : undefined),
-                // Keep a fallback numeric timeLeft for compatibility
+                // Preserve the local timer value if machine is running, use API value otherwise
                 timeLeft: prevMachine?.status === 'running' ? prevMachine.timeLeft : m.timeLeft,
                 mode: m.mode || null,
                 locked: m.locked,
@@ -455,36 +453,6 @@ const KYWashSystem = () => {
     const interval = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(interval);
   }, []);
-
-  // On every tick, check for running machines that have reached their finishTimestamp and transition them.
-  useEffect(() => {
-    setMachines((prevMachines: Machine[]) => {
-      let changed = false;
-      const updated = prevMachines.map((machine: Machine) => {
-        if (machine.status === 'running') {
-          const finishesAt = machine.finishTimestamp;
-          if (finishesAt && finishesAt <= Date.now()) {
-            changed = true;
-            // Emit completion event
-            if (socketRef.current?.emit) {
-              socketRef.current.emit('machine-complete', {
-                machineId: String(machine.id),
-                machineType: machine.type,
-                studentId: machine.userStudentId,
-              });
-            }
-
-            // Move to pending-collection to allow users to confirm collection
-            return { ...machine, status: 'pending-collection', timeLeft: 0, finishTimestamp: undefined };
-          }
-        }
-        return machine;
-      });
-
-      return changed ? updated : prevMachines;
-    });
-  }, [nowTick]);
-
 
   // Persist usage history to localStorage whenever it changes
   useEffect(() => {
@@ -710,12 +678,8 @@ const KYWashSystem = () => {
   // Track machines that have already sent 5-minute reminder
   const reminderSentRef = useRef<Set<string>>(new Set());
 
-  // Helper to compute seconds left for display (normalizes between finishTimestamp and legacy timeLeft)
+  // Helper to compute seconds left for display
   const getTimeLeftSeconds = (machine: Machine): number => {
-    if (machine.finishTimestamp) {
-      return Math.max(0, Math.ceil((machine.finishTimestamp - Date.now()) / 1000));
-    }
-
     return machine.timeLeft || 0;
   }; 
 
