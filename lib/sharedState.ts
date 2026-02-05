@@ -22,6 +22,8 @@ export interface SharedAppState {
   communityChat: ChatMessage[];
   feedback: Array<{ id: string; studentId: string; studentName: string; message: string; timestamp: number; date: string; isDone: boolean; reportCount: number; warnings: number; rating?: number }>;
   machineCollectionStatus: Record<string, { status: 'waiting' | 'coming' | 'collected'; user: string }>;
+  founders: Founder[];
+  auditLog: AuditLog[];
 }
 
 export interface Machine {
@@ -74,13 +76,33 @@ export interface UsageHistory {
 export interface User {
   studentId: string;
   phoneNumber: string;
-  password: string;
+  password?: string;
 }
 
 export interface ChatMessage {
   id: string;
   studentId: string;
   message: string;
+  timestamp: number;
+  date: string;
+  time: string;
+}
+
+export interface Founder {
+  id: string;
+  name: string;
+  scholarship: string;
+  course: string;
+  profileImage: string;
+}
+
+export interface AuditLog {
+  id: string;
+  action: 'cycle-cancelled' | 'clothes-collected' | 'machine-started' | 'machine-reset';
+  machineType: 'washer' | 'dryer';
+  machineId: string;
+  initiatedBy: string;
+  reason?: string | null;
   timestamp: number;
   date: string;
   time: string;
@@ -126,6 +148,8 @@ export const createInitialState = (): SharedAppState => ({
   communityChat: [],
   feedback: [],
   machineCollectionStatus: {},
+  founders: [],
+  auditLog: [],
 });
 
 // Global state instance

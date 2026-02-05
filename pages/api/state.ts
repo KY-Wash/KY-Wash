@@ -314,7 +314,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
                       user_id: userUuid,
                       original_duration: data.duration,
                     }
-                  ], { onConflict: ['type','id'] });
+                  ], { onConflict: 'type,id' });
                 }
               } catch (err) {
                 console.error('Failed to persist machine start to Supabase:', err);
