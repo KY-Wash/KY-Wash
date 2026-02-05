@@ -430,9 +430,9 @@ const KYWashSystem = () => {
     // Fetch initial state
     fetchState();
 
-    // Poll every 5000ms (5 seconds) to avoid conflicts with local timer
-    // The local timer will handle the countdown for running machines
-    pollingIntervalRef.current = setInterval(fetchState, 5000);
+    // Poll every 2000ms (2 seconds) for near real-time visibility of machine state changes
+    // This ensures all users see start/cancel operations, machine changes, and waiting list updates quickly
+    pollingIntervalRef.current = setInterval(fetchState, 2000);
 
     return () => {
       if (pollingIntervalRef.current) {
