@@ -23,6 +23,7 @@ interface Machine {
   originalDuration?: number;
   cancellable?: boolean;
   collectionStatus?: 'waiting' | 'coming' | null;
+  finishTimestamp?: number; // Unix timestamp when cycle will complete (for synchronized timer)
 }
 
 interface WaitlistEntry {
@@ -111,7 +112,7 @@ interface ChatMessage {
 
 const KYWashSystem = () => {
   const [user, setUser] = useState<User | null>(null);
-  const [currentView, setCurrentView] = useState<'main' | 'admin' | 'history' | 'stats' | 'dryer-stats' | 'feedback' | 'user-guide'>('main' as 'main' | 'admin' | 'history' | 'stats' | 'dryer-stats' | 'feedback' | 'user-guide');
+  const [currentView, setCurrentView] = useState<'main' | 'admin' | 'history' | 'stats' | 'dryer-stats' | 'feedback' | 'user-guide'>('main');
   const [showLogin, setShowLogin] = useState<boolean>(true);
   const [isRegistering, setIsRegistering] = useState<boolean>(false);
   const [studentId, setStudentId] = useState<string>('');
@@ -362,6 +363,12 @@ const KYWashSystem = () => {
                 userStudentId: m.userStudentId || null,
                 userPhone: m.userPhone || null,
                 originalDuration: m.originalDuration || undefined,
+                // Preserve finishTimestamp for running machines to keep timer synchronized
+                finishTimestamp: (m.status === 'running' && prevMachine?.finishTimestamp) 
+                  ? prevMachine.finishTimestamp 
+                  : (m.status === 'running' && !prevMachine?.finishTimestamp) 
+                    ? Date.now() + (m.timeLeft || 0) * 1000
+                    : undefined,
               }; 
             });
           });
@@ -678,10 +685,45 @@ const KYWashSystem = () => {
   // Track machines that have already sent 5-minute reminder
   const reminderSentRef = useRef<Set<string>>(new Set());
 
-  // Helper to compute seconds left for display
+  // Helper to compute seconds left for display using finishTimestamp for synchronization
   const getTimeLeftSeconds = (machine: Machine): number => {
-    return machine.timeLeft || 0;
+    // If no finish timestamp, use timeLeft as fallback
+    if (!machine.finishTimestamp) {
+      return machine.timeLeft || 0;
+    }
+    
+    // Calculate remaining time from finish timestamp
+    const remainingMs = Math.max(0, machine.finishTimestamp - nowTick);
+    const remainingSeconds = Math.ceil(remainingMs / 1000);
+    return remainingSeconds;
   }; 
+
+  // Auto-transition running machines to pending-collection when timer expires (synchronized across all clients)
+  useEffect(() => {
+    machines.forEach((machine) => {
+      if (machine.status === 'running' && machine.finishTimestamp) {
+        const secondsLeft = getTimeLeftSeconds(machine);
+        // When timer reaches 0 or goes negative, transition to pending-collection
+        if (secondsLeft <= 0) {
+          // Only transition once
+          const machineKey = `${machine.type}-${machine.id}`;
+          if (!notifiedMachinesRef.current.has(machineKey)) {
+            notifiedMachinesRef.current.add(machineKey);
+            
+            // Update machine status to pending-collection
+            setMachines((prev) => prev.map((m) =>
+              m.id === machine.id && m.type === machine.type
+                ? { ...m, status: 'pending-collection' }
+                : m
+            ));
+
+            // Stop continuous ringing if still going
+            stopContinuousNotificationRing();
+          }
+        }
+      }
+    });
+  }, [nowTick, machines]);
 
   // Monitor for completion and trigger notifications with alarm sound
   useEffect(() => {
@@ -3048,9 +3090,9 @@ const KYWashSystem = () => {
                 Profile
               </button>
               <button
-                onClick={() => setShowFeedback(!showFeedback)}
+                onClick={() => setCurrentView('feedback')}
                 className={`px-4 py-2 rounded-lg font-medium transition ${
-                  showFeedback
+                  currentView === 'feedback'
                     ? 'bg-blue-600 text-white'
                     : darkMode ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' : 'bg-white text-gray-700 hover:bg-gray-100'
                 }`}
@@ -3058,9 +3100,9 @@ const KYWashSystem = () => {
                 💬 Feedback
               </button>
               <button
-                onClick={() => setShowUserGuide(!showUserGuide)}
+                onClick={() => setCurrentView('user-guide')}
                 className={`px-4 py-2 rounded-lg font-medium transition ${
-                  showUserGuide
+                  currentView === 'user-guide'
                     ? 'bg-blue-600 text-white'
                     : darkMode ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' : 'bg-white text-gray-700 hover:bg-gray-100'
                 }`}
@@ -3072,7 +3114,7 @@ const KYWashSystem = () => {
 
 
             {/* Machines Grid */}
-            {currentView === 'main' && !showFeedback && (
+            {currentView === 'main' && (
               <>
                 {/* Washer Waitlist Section - Above Machines */}
                 <div className={`rounded-lg shadow-md p-6 transition-colors border-l-4 ${
@@ -3557,7 +3599,7 @@ const KYWashSystem = () => {
             )}
 
             {/* Feedback Section */}
-            {showFeedback && user && (
+            {currentView === 'feedback' && user && (
               <div className={`rounded-lg shadow-md p-6 transition-colors ${
                 darkMode ? 'bg-gray-800' : 'bg-white'
               }`}>
@@ -3708,7 +3750,7 @@ const KYWashSystem = () => {
             )}
 
             {/* User Guide View */}
-            {showUserGuide && user && (
+            {currentView === 'user-guide' && user && (
               <div className={`rounded-lg shadow-md p-6 transition-colors ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
                 <div className="max-w-full">
                   <h2 className={`text-3xl font-bold mb-6 ${darkMode ? 'text-white' : 'text-gray-800'}`}>KY Wash – User Guide</h2>
