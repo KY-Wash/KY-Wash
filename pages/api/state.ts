@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getAppState, updateAppState, loadPersistedState } from '@/lib/sharedState';
 import { insertChatMessageToDB, deleteChatMessageFromDB, insertFeedbackToDB, markFeedbackDoneInDB, reportFeedbackInDB, deleteFeedbackFromDB, getServiceSupabaseClient } from '@/lib/supabase';
+import { dedupeWaitlistEntries } from '@/lib/waitlistUtils';
 
 // Timer utilities are provided in a testable module
 import { machineStartTimes, tickServerTimers, recoverStartTimes, computeStateForClient, startServerTimer as startServerTimerUtil, stopServerTimer as stopServerTimerUtil } from '@/lib/serverTimers';
@@ -45,11 +46,9 @@ function initializeGlobalTimer() {
       const { data: wlData, error: wlErr } = await svc.from('waitlist_entries').select('student_id,phone,machine_type,created_at').order('created_at', { ascending: true });
       if (!wlErr && wlData) {
         const state = getAppState();
-        const newWaitlists: { washers: Array<{ studentId: string; phone: string }>; dryers: Array<{ studentId: string; phone: string }> } = { washers: [], dryers: [] };
-        (wlData as any[]).forEach((w) => {
-          if (w.machine_type === 'washer') newWaitlists.washers.push({ studentId: w.student_id, phone: w.phone });
-          if (w.machine_type === 'dryer') newWaitlists.dryers.push({ studentId: w.student_id, phone: w.phone });
-        });
+        // Deduplicate rows and keep the latest entry for each student+machine
+        const deduped = dedupeWaitlistEntries(wlData as any[]);
+        const newWaitlists = { washers: deduped.washers, dryers: deduped.dryers };
 
         // Update state only if different to avoid unnecessary writes
         const current = state.waitlists || { washers: [], dryers: [] };
@@ -228,11 +227,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           const { data: wlData, error: wlErr } = await svc.from('waitlist_entries').select('student_id,phone,machine_type,created_at').order('created_at', { ascending: true });
           if (!wlErr && wlData) {
             const state = getAppState();
-            state.waitlists = { washers: [], dryers: [] };
-            (wlData as any[]).forEach((w) => {
-              if (w.machine_type === 'washer') state.waitlists.washers.push({ studentId: w.student_id, phone: w.phone });
-              if (w.machine_type === 'dryer') state.waitlists.dryers.push({ studentId: w.student_id, phone: w.phone });
-            });
+            // Deduplicate rows and keep latest entry per student+machine
+            const deduped = dedupeWaitlistEntries(wlData as any[]);
+            state.waitlists = { washers: deduped.washers, dryers: deduped.dryers };
           }
         } catch (err) {
           console.warn('Failed to seed waitlist entries from Supabase:', err);

@@ -240,21 +240,33 @@ const KYWashSystem = () => {
             const newState = result.state;
             
             // Update machines - preserve originalDuration if present
-            setMachines(
-              newState.machines.map((m: any) => ({
-                id: parseInt(m.id),
-                type: m.type,
-                status: m.status,
-                timeLeft: m.timeLeft,
-                // If server provides a timeLeft for a running machine, convert it into a finishTimestamp
-                // Prefer server-provided finishTimestamp if present, otherwise compute from timeLeft
-                finishTimestamp: m.finishTimestamp ?? (m.status === 'running' && typeof m.timeLeft === 'number' && m.timeLeft > 0 ? Date.now() + m.timeLeft * 1000 : undefined),
-                mode: m.mode || null,
-                locked: m.locked,
-                userStudentId: m.userStudentId || null,
-                userPhone: m.userPhone || null,
-                originalDuration: m.originalDuration || undefined,
-              }))
+            setMachines((prevMachines) =>
+              newState.machines.map((m: any) => {
+                const id = parseInt(m.id);
+                const type = m.type;
+                const serverFinish = m.finishTimestamp ?? (m.status === 'running' && typeof m.timeLeft === 'number' && m.timeLeft > 0 ? Date.now() + m.timeLeft * 1000 : undefined);
+
+                // Find previous finishTimestamp to avoid tiny jitter from server polling
+                const prev = prevMachines.find((pm) => pm.id === id && pm.type === type);
+                let finishTimestamp = serverFinish;
+                if (prev && prev.finishTimestamp && serverFinish) {
+                  // Always pick the earlier timestamp between client and server to avoid upward flicker
+                  finishTimestamp = Math.min(prev.finishTimestamp, serverFinish);
+                }
+
+                return {
+                  id,
+                  type,
+                  status: m.status,
+                  timeLeft: m.timeLeft,
+                  finishTimestamp,
+                  mode: m.mode || null,
+                  locked: m.locked,
+                  userStudentId: m.userStudentId || null,
+                  userPhone: m.userPhone || null,
+                  originalDuration: m.originalDuration || undefined,
+                } as Machine;
+              })
             );
 
             // Update waitlists
@@ -697,15 +709,17 @@ const KYWashSystem = () => {
   const reminderSentRef = useRef<Set<string>>(new Set());
 
   // Helper to compute seconds left for display using finishTimestamp for synchronization
+  // Uses a small bias (250ms) to avoid rounding up at boundaries and returns a normal decreasing timer
   const getTimeLeftSeconds = (machine: Machine): number => {
     // If no finish timestamp, use timeLeft as fallback
     if (!machine.finishTimestamp) {
-      return machine.timeLeft || 0;
+      return Math.max(0, Math.floor((machine.timeLeft || 0)));
     }
-    
-    // Calculate remaining time from finish timestamp
-    const remainingMs = Math.max(0, machine.finishTimestamp - nowTick);
-    const remainingSeconds = Math.ceil(remainingMs / 1000);
+
+    // Subtract a small bias (250ms) before dividing to avoid +1s rounding edge cases
+    const biasMs = 250;
+    const remainingMs = Math.max(0, machine.finishTimestamp - nowTick - biasMs);
+    const remainingSeconds = Math.floor(remainingMs / 1000);
     return remainingSeconds;
   }; 
 
@@ -1017,6 +1031,19 @@ const KYWashSystem = () => {
               }
             } catch (err) {
               console.warn('Could not fetch phone from server state fallback:', err);
+            }
+          }
+
+          // If still missing, ask the server to lookup phone from Supabase (users / waitlist / usage_history)
+          if (!registeredPhone) {
+            try {
+              const resp = await fetch(`/api/lookup-phone?studentId=${encodeURIComponent(studentId)}`);
+              if (resp.ok) {
+                const j = await resp.json();
+                if (j?.phone) registeredPhone = j.phone;
+              }
+            } catch (err) {
+              console.warn('Could not lookup phone via server API:', err);
             }
           }
 
