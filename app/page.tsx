@@ -338,6 +338,12 @@ const KYWashSystem = () => {
             return newState.machines.map((m: any) => {
               // Find the previous machine state
               const prevMachine = prevMachines.find((pm) => pm.id === parseInt(m.id) && pm.type === m.type);
+
+              // Prevent polling from reverting pending-collection to running
+              if (prevMachine?.status === 'pending-collection' && m.status === 'running') {
+                console.warn(`[POLLING PROTECTION] Blocked state revert for ${m.type}-${m.id}: pending-collection → running`);
+                return prevMachine;
+              }
               
               // CRITICAL FIX: Don't allow polling to revert state transitions
               // If we locally changed to 'available', don't let polling change it back to 'running'
@@ -366,8 +372,8 @@ const KYWashSystem = () => {
                 // Preserve finishTimestamp for running machines to keep timer synchronized
                 finishTimestamp: (m.status === 'running' && prevMachine?.finishTimestamp) 
                   ? prevMachine.finishTimestamp 
-                  : (m.status === 'running' && !prevMachine?.finishTimestamp) 
-                    ? Date.now() + (m.timeLeft || 0) * 1000
+                  : (m.status === 'running' && typeof m.timeLeft === 'number' && m.timeLeft > 0)
+                    ? Date.now() + m.timeLeft * 1000
                     : undefined,
               }; 
             });
@@ -460,6 +466,19 @@ const KYWashSystem = () => {
     const interval = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(interval);
   }, []);
+
+  // Safety: If we receive a running machine with a server-provided timeLeft but no finishTimestamp,
+  // compute a canonical finishTimestamp on the client so timers don't vanish when polling lacks timestamp.
+  useEffect(() => {
+    const needsFix = machines.some((m) => m.status === 'running' && !m.finishTimestamp && typeof m.timeLeft === 'number' && m.timeLeft > 0);
+    if (!needsFix) return;
+
+    setMachines((prev) => prev.map((m) =>
+      m.status === 'running' && !m.finishTimestamp && typeof m.timeLeft === 'number' && m.timeLeft > 0
+        ? { ...m, finishTimestamp: Date.now() + m.timeLeft * 1000 }
+        : m
+    ));
+  }, [machines]);
 
   // Persist usage history to localStorage whenever it changes
   useEffect(() => {
@@ -710,12 +729,24 @@ const KYWashSystem = () => {
           if (!notifiedMachinesRef.current.has(machineKey)) {
             notifiedMachinesRef.current.add(machineKey);
             
-            // Update machine status to pending-collection
+            // Update machine status to pending-collection and make the time left explicit
             setMachines((prev) => prev.map((m) =>
               m.id === machine.id && m.type === machine.type
-                ? { ...m, status: 'pending-collection' }
+                ? { ...m, status: 'pending-collection', timeLeft: 0, finishTimestamp: Date.now() }
                 : m
             ));
+
+            // Notify server so other clients get the completion state (helps avoid flicker)
+            if (socketRef.current?.emit) {
+              try {
+                socketRef.current.emit('machine-complete', {
+                  machineId: String(machine.id),
+                  machineType: machine.type
+                });
+              } catch (err) {
+                console.warn('Failed to emit machine-complete:', err);
+              }
+            }
 
             // Stop continuous ringing if still going
             stopContinuousNotificationRing();

@@ -566,6 +566,47 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           break;
         }
 
+        case 'machine-complete': {
+          // Client reported a machine completion (timer expired locally). Promote to server state
+          const machine = state.machines.find(
+            (m) => m.id === data.machineId && m.type === data.machineType
+          );
+
+          if (machine && machine.status === 'running') {
+            machine.status = 'pending-collection';
+            machine.timeLeft = 0;
+            stopServerTimer(data.machineId, data.machineType);
+
+            // Mark usage history as Completed where appropriate
+            const historyRecord = state.usageHistory.find(h => 
+              h.studentId === machine.userStudentId && 
+              h.machineType === machine.type && 
+              h.machineId === machine.id &&
+              h.status === 'In Progress'
+            );
+            if (historyRecord) {
+              historyRecord.status = 'Completed';
+              // Sync completion status to Supabase
+              updateSupabaseRecordStatus(machine.userStudentId, machine.type, machine.id, 'Completed');
+            }
+
+            // Persist changes to Supabase
+            (async () => {
+              try {
+                const svc = getServiceSupabaseClient();
+                if (svc) {
+                  await svc.from('machines').update({ status: 'pending-collection', time_left: 0 }).match({ type: data.machineType, id: data.machineId });
+                  await svc.from('audit_logs').insert([{ action: 'machine-complete', machine_type: data.machineType, machine_id: data.machineId, timestamp: Date.now() }]);
+                }
+              } catch (err) {
+                console.error('Failed to persist machine-complete to Supabase:', err);
+              }
+            })();
+          }
+
+          break;
+        }
+
         case 'clothes-collected': {
           // Backward compatible handler: mark machine as available if the original user confirms
           const machine = state.machines.find(
