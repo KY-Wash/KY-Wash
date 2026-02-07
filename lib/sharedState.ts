@@ -36,6 +36,8 @@ export interface Machine {
   userStudentId: string;
   userPhone: string;
   originalDuration?: number;
+  // Optional canonical finish timestamp (set by server for synchronization)
+  finishTimestamp?: number;
 }
 
 export interface WaitlistEntry {

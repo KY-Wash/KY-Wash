@@ -125,6 +125,8 @@ export interface Machine {
   userPhone: string | null;
   originalDuration?: number;
   cancellable?: boolean;
+  // Optional canonical finish timestamp (set by server for synchronization)
+  finishTimestamp?: number;
 }
 
 export interface Mode {
