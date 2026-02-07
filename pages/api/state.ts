@@ -36,6 +36,33 @@ function initializeGlobalTimer() {
       updateAppState(state);
     }
   }, 1000);
+
+  // Additionally, periodically refresh waitlist entries from Supabase to avoid accidental loss
+  setInterval(async () => {
+    try {
+      const svc = getServiceSupabaseClient();
+      if (!svc) return;
+      const { data: wlData, error: wlErr } = await svc.from('waitlist_entries').select('student_id,phone,machine_type,created_at').order('created_at', { ascending: true });
+      if (!wlErr && wlData) {
+        const state = getAppState();
+        const newWaitlists: { washers: Array<{ studentId: string; phone: string }>; dryers: Array<{ studentId: string; phone: string }> } = { washers: [], dryers: [] };
+        (wlData as any[]).forEach((w) => {
+          if (w.machine_type === 'washer') newWaitlists.washers.push({ studentId: w.student_id, phone: w.phone });
+          if (w.machine_type === 'dryer') newWaitlists.dryers.push({ studentId: w.student_id, phone: w.phone });
+        });
+
+        // Update state only if different to avoid unnecessary writes
+        const current = state.waitlists || { washers: [], dryers: [] };
+        const different = JSON.stringify(current) !== JSON.stringify(newWaitlists);
+        if (different) {
+          state.waitlists = newWaitlists;
+          updateAppState(state);
+        }
+      }
+    } catch (err) {
+      console.warn('Periodic waitlist sync failed:', err);
+    }
+  }, 60 * 1000); // every minute
 }
 
 function startServerTimer(machineId: string, machineType: string, initialDuration: number) {
@@ -194,6 +221,21 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             date: new Date(a.created_at).toLocaleDateString(),
             time: new Date(a.created_at).toLocaleTimeString(),
           }));
+        }
+
+        // Seed waitlists from DB (so we don't lose entries across restarts)
+        try {
+          const { data: wlData, error: wlErr } = await svc.from('waitlist_entries').select('student_id,phone,machine_type,created_at').order('created_at', { ascending: true });
+          if (!wlErr && wlData) {
+            const state = getAppState();
+            state.waitlists = { washers: [], dryers: [] };
+            (wlData as any[]).forEach((w) => {
+              if (w.machine_type === 'washer') state.waitlists.washers.push({ studentId: w.student_id, phone: w.phone });
+              if (w.machine_type === 'dryer') state.waitlists.dryers.push({ studentId: w.student_id, phone: w.phone });
+            });
+          }
+        } catch (err) {
+          console.warn('Failed to seed waitlist entries from Supabase:', err);
         }
 
         // Persist back to state file

@@ -74,4 +74,37 @@ describe('serverTimers', () => {
     expect(start).toBeGreaterThanOrEqual(now - elapsedMs - 5); // allow small delta
     expect(start).toBeLessThanOrEqual(now - elapsedMs + 5);
   });
+
+  it('timer ticks down each second until completion', () => {
+    // Use a short duration (0.1 minutes = 6 seconds) to simulate per-second ticks
+    const now = Date.now();
+    const state: any = {
+      machines: [
+        { id: 5, type: 'dryer', status: 'running', originalDuration: 0.1, timeLeft: 6, userStudentId: 't1' }
+      ],
+      usageHistory: [
+        { id: 'h2', studentId: 't1', machineType: 'dryer', machineId: 5, status: 'In Progress' }
+      ]
+    };
+
+    // register start time as now
+    machineStartTimes.set('dryer-5', now);
+
+    // Tick once per second and assert decreasing timeLeft
+    for (let i = 0; i <= 7; i++) {
+      const currentTime = now + i * 1000;
+      const changed = tickServerTimers(state, currentTime);
+
+      const expected = Math.max(0, 6 - Math.floor((currentTime - now) / 1000));
+      expect(state.machines[0].timeLeft).toBe(expected);
+
+      if (expected > 0) {
+        expect(state.machines[0].status).toBe('running');
+      } else {
+        expect(state.machines[0].status).toBe('pending-collection');
+        expect(state.usageHistory[0].status).toBe('Completed');
+        break;
+      }
+    }
+  });
 });

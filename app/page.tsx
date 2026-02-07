@@ -1020,8 +1020,31 @@ const KYWashSystem = () => {
             }
           }
 
+          // Determine final phone to use (don't overwrite existing known phone with empty string)
+          let finalPhone = registeredPhone || '';
+          if (!finalPhone) {
+            // Try localStorage fallback
+            if (typeof window !== 'undefined') {
+              try {
+                const saved = localStorage.getItem('kyWashUser');
+                if (saved) {
+                  const parsed = JSON.parse(saved);
+                  finalPhone = parsed?.phoneNumber || '';
+                }
+              } catch (e) {
+                // ignore
+              }
+            }
+
+            // Try application users list
+            if (!finalPhone && users && users.length > 0) {
+              const u = users.find((x) => x.studentId === studentId || (x as any).student_id === studentId);
+              finalPhone = u?.phoneNumber || (u as any)?.phone || '';
+            }
+          }
+
           // Login successful
-          setUser({ studentId, phoneNumber: registeredPhone });
+          setUser({ studentId, phoneNumber: finalPhone });
           setShowLogin(false);
           setCurrentView('main');
           setStudentId('');
