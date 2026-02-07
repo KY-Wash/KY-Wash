@@ -551,6 +551,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           if (machine && machine.status === 'running') {
             machine.status = 'pending-collection';
             machine.timeLeft = 0;
+            machine.finishTimestamp = Date.now();
             stopServerTimer(data.machineId, data.machineType);
 
             // Mark usage history as Completed where appropriate

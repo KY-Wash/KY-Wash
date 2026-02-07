@@ -247,7 +247,8 @@ const KYWashSystem = () => {
                 status: m.status,
                 timeLeft: m.timeLeft,
                 // If server provides a timeLeft for a running machine, convert it into a finishTimestamp
-                finishTimestamp: m.status === 'running' && typeof m.timeLeft === 'number' ? Date.now() + m.timeLeft * 1000 : undefined,
+                // Prefer server-provided finishTimestamp if present, otherwise compute from timeLeft
+                finishTimestamp: m.finishTimestamp ?? (m.status === 'running' && typeof m.timeLeft === 'number' && m.timeLeft > 0 ? Date.now() + m.timeLeft * 1000 : undefined),
                 mode: m.mode || null,
                 locked: m.locked,
                 userStudentId: m.userStudentId || null,
@@ -339,42 +340,33 @@ const KYWashSystem = () => {
               // Find the previous machine state
               const prevMachine = prevMachines.find((pm) => pm.id === parseInt(m.id) && pm.type === m.type);
 
-              // Prevent polling from reverting pending-collection to running
+              // Protect against polling flipping a pending-collection back to running
               if (prevMachine?.status === 'pending-collection' && m.status === 'running') {
                 console.warn(`[POLLING PROTECTION] Blocked state revert for ${m.type}-${m.id}: pending-collection → running`);
                 return prevMachine;
               }
-              
-              // CRITICAL FIX: Don't allow polling to revert state transitions
-              // If we locally changed to 'available', don't let polling change it back to 'running'
-              if (prevMachine?.status === 'available' && m.status === 'running') {
-                console.warn(`[POLLING PROTECTION] Blocked state revert for ${m.type}-${m.id}: available → running`);
-                return prevMachine; // Keep local available state
-              }
-              
-              // If local status is different from server, trust local state (optimistic update won)
-              if (prevMachine?.status !== m.status && prevMachine?.status === 'available') {
-                console.warn(`[POLLING PROTECTION] Keeping local state for ${m.type}-${m.id}: ${prevMachine.status}`);
+
+              // Protect local running state from a stale poll that says 'available' (don't stomp a running we started)
+              if (prevMachine?.status === 'running' && m.status === 'available') {
+                console.warn(`[POLLING PROTECTION] Blocked state revert for ${m.type}-${m.id}: running → available`);
                 return prevMachine;
               }
-              
+
+              // Accept server state for all other cases (this ensures we see other users' starts)
+              const serverFinish = m.finishTimestamp ?? (m.status === 'running' && typeof m.timeLeft === 'number' && m.timeLeft > 0 ? Date.now() + m.timeLeft * 1000 : undefined);
+
               return {
                 id: parseInt(m.id),
                 type: m.type,
                 status: m.status,
-                // Preserve the local timer value if machine is running, use API value otherwise
-                timeLeft: prevMachine?.status === 'running' ? prevMachine.timeLeft : m.timeLeft,
+                // Defer actual displayed remaining time to finishTimestamp (keeps clients synchronized)
+                timeLeft: m.timeLeft || 0,
                 mode: m.mode || null,
                 locked: m.locked,
                 userStudentId: m.userStudentId || null,
                 userPhone: m.userPhone || null,
                 originalDuration: m.originalDuration || undefined,
-                // Preserve finishTimestamp for running machines to keep timer synchronized
-                finishTimestamp: (m.status === 'running' && prevMachine?.finishTimestamp) 
-                  ? prevMachine.finishTimestamp 
-                  : (m.status === 'running' && typeof m.timeLeft === 'number' && m.timeLeft > 0)
-                    ? Date.now() + m.timeLeft * 1000
-                    : undefined,
+                finishTimestamp: serverFinish,
               }; 
             });
           });
