@@ -2,8 +2,11 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { getAppState, updateAppState, loadPersistedState } from '@/lib/sharedState';
 import { insertChatMessageToDB, deleteChatMessageFromDB, insertFeedbackToDB, markFeedbackDoneInDB, reportFeedbackInDB, deleteFeedbackFromDB, getServiceSupabaseClient } from '@/lib/supabase';
 
-// Track machine start times for accurate timer calculation based on system clock
-const machineStartTimes: Map<string, number> = new Map();
+// Timer utilities are provided in a testable module
+import { machineStartTimes, tickServerTimers, recoverStartTimes, computeStateForClient, startServerTimer as startServerTimerUtil, stopServerTimer as stopServerTimerUtil } from '@/lib/serverTimers';
+
+// Note: computeStateForClient is imported from the module and used when returning state to clients.
+
 // Global server timer that runs continuously
 let globalServerTimer: NodeJS.Timeout | null = null;
 // Flag to ensure state is loaded only once
@@ -18,66 +21,31 @@ function initializeGlobalTimer() {
   globalServerTimer = setInterval(() => {
     const state = getAppState();
     const now = Date.now();
-    let stateChanged = false;
-    
-    state.machines.forEach((machine) => {
-      const key = `${machine.type}-${machine.id}`;
-      
-      if (machine.status === 'running') {
-        const startTime = machineStartTimes.get(key);
-        if (startTime !== undefined) {
-          // Calculate time elapsed in seconds based on system clock
-          const elapsedSeconds = Math.floor((now - startTime) / 1000);
-          const totalDurationSeconds = machine.originalDuration ? machine.originalDuration * 60 : machine.timeLeft;
-          
-          // Calculate remaining time based on system clock
-          const newTimeLeft = Math.max(0, totalDurationSeconds - elapsedSeconds);
-          
-          if (newTimeLeft !== machine.timeLeft) {
-            machine.timeLeft = newTimeLeft;
-            stateChanged = true;
-          }
-          
-          // If timer reached 0, transition to pending-collection
-          if (machine.timeLeft === 0 && machine.status === 'running') {
-            machine.status = 'pending-collection';
-            stateChanged = true;
 
-            // Update usage history to 'Completed'
-            const historyRecord = state.usageHistory.find(h => 
-              h.studentId === machine.userStudentId && 
-              h.machineType === machine.type && 
-              h.machineId === machine.id &&
-              h.status === 'In Progress'
-            );
-            if (historyRecord) {
-              historyRecord.status = 'Completed';
-              // Sync completion status to Supabase
-              updateSupabaseRecordStatus(machine.userStudentId, machine.type, machine.id, 'Completed');
-            }
-          }
+    const changed = tickServerTimers(state, now);
+
+    if (changed) {
+      // For any machine now in pending-collection, ensure usage history is marked Completed
+      state.machines.forEach((machine: any) => {
+        if (machine.status === 'pending-collection') {
+          // Best-effort sync to Supabase (idempotent on server side)
+          updateSupabaseRecordStatus(machine.userStudentId, machine.type, machine.id, 'Completed');
         }
-      }
-    });
-    
-    if (stateChanged) {
+      });
+
       updateAppState(state);
     }
   }, 1000);
 }
 
 function startServerTimer(machineId: string, machineType: string, initialDuration: number) {
-  const key = `${machineType}-${machineId}`;
-  // Record the exact time when machine starts (system clock based)
-  machineStartTimes.set(key, Date.now());
-  
-  // Initialize global timer if not already done
+  // delegate to testable util and ensure timer initialized
+  startServerTimerUtil(machineId, machineType, initialDuration);
   initializeGlobalTimer();
 }
 
 function stopServerTimer(machineId: string, machineType: string) {
-  const key = `${machineType}-${machineId}`;
-  machineStartTimes.delete(key);
+  stopServerTimerUtil(machineId, machineType);
 }
 
 // Helper function to sync usage record to Supabase
@@ -230,6 +198,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
         // Persist back to state file
         updateAppState(getAppState());
+
+        // Restore server-side start times for running machines so the global timer can continue
+        try {
+          recoverStartTimes(getAppState());
+        } catch (err) {
+          console.warn('Failed to restore machine start times after seeding state:', err);
+        }
       } catch (err) {
         console.error('Failed to seed state from Supabase:', err);
       }
@@ -250,8 +225,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const state = getAppState();
 
     if (req.method === 'GET') {
-      // GET - Return current state
-      res.status(200).json(state);
+      // GET - Return current state (include computed finishTimestamp for running machines)
+      const stateForClient = computeStateForClient(state);
+      res.status(200).json(stateForClient);
     } else if (req.method === 'POST') {
       // POST - Handle events (machine start, waitlist join, etc)
       const { event, data } = req.body;
@@ -1007,7 +983,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       }
 
       updateAppState(state);
-      res.status(200).json({ success: true, state });
+      // Include computed finish timestamps in the returned state so clients can stay synchronized
+      const stateForClient = computeStateForClient(state);
+      res.status(200).json({ success: true, state: stateForClient });
     } else {
       res.status(405).json({ error: 'Method not allowed' });
     }
