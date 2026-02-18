@@ -1,9 +1,13 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getAppState, updateAppState, loadPersistedState } from '@/lib/sharedState';
 import { insertChatMessageToDB, deleteChatMessageFromDB, insertFeedbackToDB, markFeedbackDoneInDB, reportFeedbackInDB, deleteFeedbackFromDB, getServiceSupabaseClient } from '@/lib/supabase';
+import { dedupeWaitlistEntries } from '@/lib/waitlistUtils';
 
-// Track machine start times for accurate timer calculation based on system clock
-const machineStartTimes: Map<string, number> = new Map();
+// Timer utilities are provided in a testable module
+import { machineStartTimes, tickServerTimers, recoverStartTimes, computeStateForClient, startServerTimer as startServerTimerUtil, stopServerTimer as stopServerTimerUtil } from '@/lib/serverTimers';
+
+// Note: computeStateForClient is imported from the module and used when returning state to clients.
+
 // Global server timer that runs continuously
 let globalServerTimer: NodeJS.Timeout | null = null;
 // Flag to ensure state is loaded only once
@@ -14,117 +18,60 @@ function initializeGlobalTimer() {
     return; // Already initialized
   }
   
-  // Run a global timer every 1 second to update all running machines based on finishTimestamp
+  // Run a global timer every 1 second to decrement all running machines based on system time
   globalServerTimer = setInterval(() => {
     const state = getAppState();
     const now = Date.now();
-    let stateChanged = false;
-    
-    state.machines.forEach((machine) => {
-      if (machine.status === 'running') {
-        // Use finishTimestamp if available (preferred method for sync across restarts)
-        if (machine.finishTimestamp !== undefined && machine.finishTimestamp > 0) {
-          const remainingMs = Math.max(0, machine.finishTimestamp - now);
-          const newTimeLeft = Math.ceil(remainingMs / 1000);
-          
-          if (newTimeLeft !== machine.timeLeft) {
-            machine.timeLeft = newTimeLeft;
-            stateChanged = true;
-          }
-          
-          // If timer reached 0, transition to pending-collection
-          if (newTimeLeft === 0 && machine.status === 'running') {
-            machine.status = 'pending-collection';
-            machine.timeLeft = 0;
-            machine.finishTimestamp = undefined;
-            stateChanged = true;
 
-            // Update usage history to 'Completed'
-            const historyRecord = state.usageHistory.find(h => 
-              h.studentId === machine.userStudentId && 
-              h.machineType === machine.type && 
-              h.machineId === machine.id &&
-              h.status === 'In Progress'
-            );
-            if (historyRecord) {
-              historyRecord.status = 'Completed';
-              // Sync completion status to Supabase
-              updateSupabaseRecordStatus(machine.userStudentId, machine.type, machine.id, 'Completed');
-            }
+    const changed = tickServerTimers(state, now);
 
-            // Persist machine state to Supabase
-            (async () => {
-              try {
-                const svc = getServiceSupabaseClient();
-                if (svc) {
-                  await svc.from('machines').update({ 
-                    status: 'pending-collection', 
-                    time_left: 0,
-                    finish_timestamp: null 
-                  }).match({ type: machine.type, id: machine.id });
-                }
-              } catch (err) {
-                console.error('Failed to persist machine completion to Supabase:', err);
-              }
-            })();
-          }
-        } else {
-          // Fallback: use machineStartTimes if finishTimestamp is not set
-          const startTime = machineStartTimes.get(`${machine.type}-${machine.id}`);
-          if (startTime !== undefined) {
-            // Calculate time elapsed in seconds based on system clock
-            const elapsedSeconds = Math.floor((now - startTime) / 1000);
-            const totalDurationSeconds = machine.originalDuration ? machine.originalDuration * 60 : machine.timeLeft;
-            
-            // Calculate remaining time based on system clock
-            const newTimeLeft = Math.max(0, totalDurationSeconds - elapsedSeconds);
-            
-            if (newTimeLeft !== machine.timeLeft) {
-              machine.timeLeft = newTimeLeft;
-              stateChanged = true;
-            }
-            
-            // If timer reached 0, transition to pending-collection
-            if (newTimeLeft === 0 && machine.status === 'running') {
-              machine.status = 'pending-collection';
-              stateChanged = true;
-
-              // Update usage history to 'Completed'
-              const historyRecord = state.usageHistory.find(h => 
-                h.studentId === machine.userStudentId && 
-                h.machineType === machine.type && 
-                h.machineId === machine.id &&
-                h.status === 'In Progress'
-              );
-              if (historyRecord) {
-                historyRecord.status = 'Completed';
-                // Sync completion status to Supabase
-                updateSupabaseRecordStatus(machine.userStudentId, machine.type, machine.id, 'Completed');
-              }
-            }
-          }
+    if (changed) {
+      // For any machine now in pending-collection, ensure usage history is marked Completed
+      state.machines.forEach((machine: any) => {
+        if (machine.status === 'pending-collection') {
+          // Best-effort sync to Supabase (idempotent on server side)
+          updateSupabaseRecordStatus(machine.userStudentId, machine.type, machine.id, 'Completed');
         }
-      }
-    });
-    
-    if (stateChanged) {
+      });
+
       updateAppState(state);
     }
   }, 1000);
+
+  // Additionally, periodically refresh waitlist entries from Supabase to avoid accidental loss
+  setInterval(async () => {
+    try {
+      const svc = getServiceSupabaseClient();
+      if (!svc) return;
+      const { data: wlData, error: wlErr } = await svc.from('waitlist_entries').select('student_id,phone,machine_type,created_at').order('created_at', { ascending: true });
+      if (!wlErr && wlData) {
+        const state = getAppState();
+        // Deduplicate rows and keep the latest entry for each student+machine
+        const deduped = dedupeWaitlistEntries(wlData as any[]);
+        const newWaitlists = { washers: deduped.washers, dryers: deduped.dryers };
+
+        // Update state only if different to avoid unnecessary writes
+        const current = state.waitlists || { washers: [], dryers: [] };
+        const different = JSON.stringify(current) !== JSON.stringify(newWaitlists);
+        if (different) {
+          state.waitlists = newWaitlists;
+          updateAppState(state);
+        }
+      }
+    } catch (err) {
+      console.warn('Periodic waitlist sync failed:', err);
+    }
+  }, 60 * 1000); // every minute
 }
 
 function startServerTimer(machineId: string, machineType: string, initialDuration: number) {
-  const key = `${machineType}-${machineId}`;
-  // Record the exact time when machine starts (system clock based)
-  machineStartTimes.set(key, Date.now());
-  
-  // Initialize global timer if not already done
+  // delegate to testable util and ensure timer initialized
+  startServerTimerUtil(machineId, machineType, initialDuration);
   initializeGlobalTimer();
 }
 
 function stopServerTimer(machineId: string, machineType: string) {
-  const key = `${machineType}-${machineId}`;
-  machineStartTimes.delete(key);
+  stopServerTimerUtil(machineId, machineType);
 }
 
 // Helper function to sync usage record to Supabase
@@ -275,34 +222,28 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           }));
         }
 
-        // Recover running machines from database with their finishTimestamps
-        const { data: runningMachines, error: machinesErr } = await svc.from('machines').select('*').eq('status', 'running');
-        if (!machinesErr && runningMachines) {
-          const state = getAppState();
-          (runningMachines as any[]).forEach(dbMachine => {
-            const stateIdx = state.machines.findIndex(m => m.id === String(dbMachine.id) && m.type === dbMachine.type);
-            if (stateIdx >= 0) {
-              // Restore running machine state from database
-              state.machines[stateIdx] = {
-                ...state.machines[stateIdx],
-                status: 'running',
-                timeLeft: dbMachine.time_left || 0,
-                mode: dbMachine.mode || '',
-                originalDuration: dbMachine.original_duration,
-                finishTimestamp: dbMachine.finish_timestamp, // Restore finish timestamp
-                userStudentId: dbMachine.user_student_id || '',
-                userPhone: dbMachine.user_phone || '',
-              };
-              // Also start the server timer for this machine
-              if (dbMachine.finish_timestamp && dbMachine.finish_timestamp > Date.now()) {
-                startServerTimer(String(dbMachine.id), dbMachine.type, dbMachine.original_duration || 0);
-              }
-            }
-          });
+        // Seed waitlists from DB (so we don't lose entries across restarts)
+        try {
+          const { data: wlData, error: wlErr } = await svc.from('waitlist_entries').select('student_id,phone,machine_type,created_at').order('created_at', { ascending: true });
+          if (!wlErr && wlData) {
+            const state = getAppState();
+            // Deduplicate rows and keep latest entry per student+machine
+            const deduped = dedupeWaitlistEntries(wlData as any[]);
+            state.waitlists = { washers: deduped.washers, dryers: deduped.dryers };
+          }
+        } catch (err) {
+          console.warn('Failed to seed waitlist entries from Supabase:', err);
         }
 
         // Persist back to state file
         updateAppState(getAppState());
+
+        // Restore server-side start times for running machines so the global timer can continue
+        try {
+          recoverStartTimes(getAppState());
+        } catch (err) {
+          console.warn('Failed to restore machine start times after seeding state:', err);
+        }
       } catch (err) {
         console.error('Failed to seed state from Supabase:', err);
       }
@@ -323,8 +264,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const state = getAppState();
 
     if (req.method === 'GET') {
-      // GET - Return current state
-      res.status(200).json(state);
+      // GET - Return current state (include computed finishTimestamp for running machines)
+      const stateForClient = computeStateForClient(state);
+      res.status(200).json(stateForClient);
     } else if (req.method === 'POST') {
       // POST - Handle events (machine start, waitlist join, etc)
       const { event, data } = req.body;
@@ -340,15 +282,12 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           );
           if (machine && machine.status === 'available') {
             const durationInSeconds = data.duration * 60;
-            const finishTimestamp = Date.now() + durationInSeconds * 1000;
-            
             machine.status = 'running';
             machine.mode = data.mode;
             machine.timeLeft = durationInSeconds;
             machine.originalDuration = data.duration; // Store original duration for accurate timer
             machine.userStudentId = data.studentId;
             machine.userPhone = data.phoneNumber;
-            machine.finishTimestamp = finishTimestamp; // Store finish timestamp for persistence
             
             // Calculate spending (both washers and dryers charge same: Normal=5, Extra=6)
             const spending = data.mode === 'Normal' ? 5 : data.mode.includes('Extra') ? 6 : 0;
@@ -392,7 +331,6 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
                       locked: false,
                       user_id: userUuid,
                       original_duration: data.duration,
-                      finish_timestamp: finishTimestamp, // Persist the finish timestamp
                     }
                   ], { onConflict: 'type,id' });
                 }
@@ -445,14 +383,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             machine.mode = '';
             machine.userStudentId = '';
             machine.userPhone = '';
-            machine.finishTimestamp = undefined;
 
             // Persist machine reset to Supabase
             (async () => {
               try {
                 const svc = getServiceSupabaseClient();
                 if (svc) {
-                  await svc.from('machines').update({ status: 'available', time_left: 0, user_id: null, mode: null, finish_timestamp: null }).match({ type: data.machineType, id: data.machineId });
+                  await svc.from('machines').update({ status: 'available', time_left: 0, user_id: null, mode: null }).match({ type: data.machineType, id: data.machineId });
                 }
               } catch (err) {
                 console.error('Failed to persist machine cancellation to Supabase:', err);
@@ -641,6 +578,48 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
               stopServerTimer(data.machineId, data.machineType);
             }
           }
+          break;
+        }
+
+        case 'machine-complete': {
+          // Client reported a machine completion (timer expired locally). Promote to server state
+          const machine = state.machines.find(
+            (m) => m.id === data.machineId && m.type === data.machineType
+          );
+
+          if (machine && machine.status === 'running') {
+            machine.status = 'pending-collection';
+            machine.timeLeft = 0;
+            machine.finishTimestamp = Date.now();
+            stopServerTimer(data.machineId, data.machineType);
+
+            // Mark usage history as Completed where appropriate
+            const historyRecord = state.usageHistory.find(h => 
+              h.studentId === machine.userStudentId && 
+              h.machineType === machine.type && 
+              h.machineId === machine.id &&
+              h.status === 'In Progress'
+            );
+            if (historyRecord) {
+              historyRecord.status = 'Completed';
+              // Sync completion status to Supabase
+              updateSupabaseRecordStatus(machine.userStudentId, machine.type, machine.id, 'Completed');
+            }
+
+            // Persist changes to Supabase
+            (async () => {
+              try {
+                const svc = getServiceSupabaseClient();
+                if (svc) {
+                  await svc.from('machines').update({ status: 'pending-collection', time_left: 0 }).match({ type: data.machineType, id: data.machineId });
+                  await svc.from('audit_logs').insert([{ action: 'machine-complete', machine_type: data.machineType, machine_id: data.machineId, timestamp: Date.now() }]);
+                }
+              } catch (err) {
+                console.error('Failed to persist machine-complete to Supabase:', err);
+              }
+            })();
+          }
+
           break;
         }
 
@@ -1044,7 +1023,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       }
 
       updateAppState(state);
-      res.status(200).json({ success: true, state });
+      // Include computed finish timestamps in the returned state so clients can stay synchronized
+      const stateForClient = computeStateForClient(state);
+      res.status(200).json({ success: true, state: stateForClient });
     } else {
       res.status(405).json({ error: 'Method not allowed' });
     }

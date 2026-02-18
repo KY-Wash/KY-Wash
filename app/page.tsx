@@ -240,22 +240,33 @@ const KYWashSystem = () => {
             const newState = result.state;
             
             // Update machines - preserve originalDuration if present
-            setMachines(
-              newState.machines.map((m: any) => ({
-                id: parseInt(m.id),
-                type: m.type,
-                status: m.status,
-                timeLeft: m.timeLeft,
-                // Use finishTimestamp from server if available (best for sync), otherwise compute from timeLeft
-                finishTimestamp: m.status === 'running' && (m.finishTimestamp || m.timeLeft) 
-                  ? (m.finishTimestamp || Date.now() + m.timeLeft * 1000)
-                  : undefined,
-                mode: m.mode || null,
-                locked: m.locked,
-                userStudentId: m.userStudentId || null,
-                userPhone: m.userPhone || null,
-                originalDuration: m.originalDuration || undefined,
-              }))
+            setMachines((prevMachines) =>
+              newState.machines.map((m: any) => {
+                const id = parseInt(m.id);
+                const type = m.type;
+                const serverFinish = m.finishTimestamp ?? (m.status === 'running' && typeof m.timeLeft === 'number' && m.timeLeft > 0 ? Date.now() + m.timeLeft * 1000 : undefined);
+
+                // Find previous finishTimestamp to avoid tiny jitter from server polling
+                const prev = prevMachines.find((pm) => pm.id === id && pm.type === type);
+                let finishTimestamp = serverFinish;
+                if (prev && prev.finishTimestamp && serverFinish) {
+                  // Always pick the earlier timestamp between client and server to avoid upward flicker
+                  finishTimestamp = Math.min(prev.finishTimestamp, serverFinish);
+                }
+
+                return {
+                  id,
+                  type,
+                  status: m.status,
+                  timeLeft: m.timeLeft,
+                  finishTimestamp,
+                  mode: m.mode || null,
+                  locked: m.locked,
+                  userStudentId: m.userStudentId || null,
+                  userPhone: m.userPhone || null,
+                  originalDuration: m.originalDuration || undefined,
+                } as Machine;
+              })
             );
 
             // Update waitlists
@@ -340,35 +351,34 @@ const KYWashSystem = () => {
             return newState.machines.map((m: any) => {
               // Find the previous machine state
               const prevMachine = prevMachines.find((pm) => pm.id === parseInt(m.id) && pm.type === m.type);
-              
-              // CRITICAL FIX: Don't allow polling to revert state transitions
-              // If we locally changed to 'available', don't let polling change it back to 'running'
-              if (prevMachine?.status === 'available' && m.status === 'running') {
-                console.warn(`[POLLING PROTECTION] Blocked state revert for ${m.type}-${m.id}: available → running`);
-                return prevMachine; // Keep local available state
-              }
-              
-              // If local status is different from server, trust local state (optimistic update won)
-              if (prevMachine?.status !== m.status && prevMachine?.status === 'available') {
-                console.warn(`[POLLING PROTECTION] Keeping local state for ${m.type}-${m.id}: ${prevMachine.status}`);
+
+              // Protect against polling flipping a pending-collection back to running
+              if (prevMachine?.status === 'pending-collection' && m.status === 'running') {
+                console.warn(`[POLLING PROTECTION] Blocked state revert for ${m.type}-${m.id}: pending-collection → running`);
                 return prevMachine;
               }
-              
+
+              // Protect local running state from a stale poll that says 'available' (don't stomp a running we started)
+              if (prevMachine?.status === 'running' && m.status === 'available') {
+                console.warn(`[POLLING PROTECTION] Blocked state revert for ${m.type}-${m.id}: running → available`);
+                return prevMachine;
+              }
+
+              // Accept server state for all other cases (this ensures we see other users' starts)
+              const serverFinish = m.finishTimestamp ?? (m.status === 'running' && typeof m.timeLeft === 'number' && m.timeLeft > 0 ? Date.now() + m.timeLeft * 1000 : undefined);
+
               return {
                 id: parseInt(m.id),
                 type: m.type,
                 status: m.status,
-                // Preserve the local timer value if machine is running, use API value otherwise
-                timeLeft: prevMachine?.status === 'running' ? prevMachine.timeLeft : m.timeLeft,
+                // Defer actual displayed remaining time to finishTimestamp (keeps clients synchronized)
+                timeLeft: m.timeLeft || 0,
                 mode: m.mode || null,
                 locked: m.locked,
                 userStudentId: m.userStudentId || null,
                 userPhone: m.userPhone || null,
                 originalDuration: m.originalDuration || undefined,
-                // Use server's finishTimestamp if available (best source of truth), otherwise preserve local or compute new
-                finishTimestamp: m.status === 'running' 
-                  ? (m.finishTimestamp || prevMachine?.finishTimestamp || Date.now() + (m.timeLeft || 0) * 1000)
-                  : undefined,
+                finishTimestamp: serverFinish,
               }; 
             });
           });
@@ -441,10 +451,9 @@ const KYWashSystem = () => {
     // Fetch initial state
     fetchState();
 
-    // Poll every 1500ms (1.5 seconds) for near real-time visibility of machine state changes
+    // Poll every 2000ms (2 seconds) for near real-time visibility of machine state changes
     // This ensures all users see start/cancel operations, machine changes, and waiting list updates quickly
-    // Shorter interval reduces chances of timer stopping mid-cycle
-    pollingIntervalRef.current = setInterval(fetchState, 1500);
+    pollingIntervalRef.current = setInterval(fetchState, 2000);
 
     return () => {
       if (pollingIntervalRef.current) {
@@ -461,6 +470,19 @@ const KYWashSystem = () => {
     const interval = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(interval);
   }, []);
+
+  // Safety: If we receive a running machine with a server-provided timeLeft but no finishTimestamp,
+  // compute a canonical finishTimestamp on the client so timers don't vanish when polling lacks timestamp.
+  useEffect(() => {
+    const needsFix = machines.some((m) => m.status === 'running' && !m.finishTimestamp && typeof m.timeLeft === 'number' && m.timeLeft > 0);
+    if (!needsFix) return;
+
+    setMachines((prev) => prev.map((m) =>
+      m.status === 'running' && !m.finishTimestamp && typeof m.timeLeft === 'number' && m.timeLeft > 0
+        ? { ...m, finishTimestamp: Date.now() + m.timeLeft * 1000 }
+        : m
+    ));
+  }, [machines]);
 
   // Persist usage history to localStorage whenever it changes
   useEffect(() => {
@@ -687,15 +709,17 @@ const KYWashSystem = () => {
   const reminderSentRef = useRef<Set<string>>(new Set());
 
   // Helper to compute seconds left for display using finishTimestamp for synchronization
+  // Uses a small bias (250ms) to avoid rounding up at boundaries and returns a normal decreasing timer
   const getTimeLeftSeconds = (machine: Machine): number => {
     // If no finish timestamp, use timeLeft as fallback
     if (!machine.finishTimestamp) {
-      return machine.timeLeft || 0;
+      return Math.max(0, Math.floor((machine.timeLeft || 0)));
     }
-    
-    // Calculate remaining time from finish timestamp
-    const remainingMs = Math.max(0, machine.finishTimestamp - nowTick);
-    const remainingSeconds = Math.ceil(remainingMs / 1000);
+
+    // Subtract a small bias (250ms) before dividing to avoid +1s rounding edge cases
+    const biasMs = 250;
+    const remainingMs = Math.max(0, machine.finishTimestamp - nowTick - biasMs);
+    const remainingSeconds = Math.floor(remainingMs / 1000);
     return remainingSeconds;
   }; 
 
@@ -711,12 +735,24 @@ const KYWashSystem = () => {
           if (!notifiedMachinesRef.current.has(machineKey)) {
             notifiedMachinesRef.current.add(machineKey);
             
-            // Update machine status to pending-collection
+            // Update machine status to pending-collection and make the time left explicit
             setMachines((prev) => prev.map((m) =>
               m.id === machine.id && m.type === machine.type
-                ? { ...m, status: 'pending-collection' }
+                ? { ...m, status: 'pending-collection', timeLeft: 0, finishTimestamp: Date.now() }
                 : m
             ));
+
+            // Notify server so other clients get the completion state (helps avoid flicker)
+            if (socketRef.current?.emit) {
+              try {
+                socketRef.current.emit('machine-complete', {
+                  machineId: String(machine.id),
+                  machineType: machine.type
+                });
+              } catch (err) {
+                console.warn('Failed to emit machine-complete:', err);
+              }
+            }
 
             // Stop continuous ringing if still going
             stopContinuousNotificationRing();
@@ -998,8 +1034,44 @@ const KYWashSystem = () => {
             }
           }
 
+          // If still missing, ask the server to lookup phone from Supabase (users / waitlist / usage_history)
+          if (!registeredPhone) {
+            try {
+              const resp = await fetch(`/api/lookup-phone?studentId=${encodeURIComponent(studentId)}`);
+              if (resp.ok) {
+                const j = await resp.json();
+                if (j?.phone) registeredPhone = j.phone;
+              }
+            } catch (err) {
+              console.warn('Could not lookup phone via server API:', err);
+            }
+          }
+
+          // Determine final phone to use (don't overwrite existing known phone with empty string)
+          let finalPhone = registeredPhone || '';
+          if (!finalPhone) {
+            // Try localStorage fallback
+            if (typeof window !== 'undefined') {
+              try {
+                const saved = localStorage.getItem('kyWashUser');
+                if (saved) {
+                  const parsed = JSON.parse(saved);
+                  finalPhone = parsed?.phoneNumber || '';
+                }
+              } catch (e) {
+                // ignore
+              }
+            }
+
+            // Try application users list
+            if (!finalPhone && users && users.length > 0) {
+              const u = users.find((x) => x.studentId === studentId || (x as any).student_id === studentId);
+              finalPhone = u?.phoneNumber || (u as any)?.phone || '';
+            }
+          }
+
           // Login successful
-          setUser({ studentId, phoneNumber: registeredPhone });
+          setUser({ studentId, phoneNumber: finalPhone });
           setShowLogin(false);
           setCurrentView('main');
           setStudentId('');
@@ -1128,7 +1200,7 @@ const KYWashSystem = () => {
         mode: mode.name,
         duration: mode.duration,
         spending: spending,
-        status: 'Completed',
+        status: 'In Progress',
         date: dateStr,
         day: dayName,
         time: timeStr,
@@ -2522,10 +2594,13 @@ const KYWashSystem = () => {
                       )}
                     </div>
                     <p className={`text-sm capitalize ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{machine.locked ? 'Locked by Admin' : machine.status}</p>
-                    {machine.status === 'running' && !machine.locked && (
+                    {(machine.status === 'running' || machine.status === 'pending-collection') && !machine.locked && (
                       <>
                         <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>User: {machine.userStudentId}</p>
                         <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Time Left: {formatTime(getTimeLeftSeconds(machine))}</p>
+                        {machine.status === 'pending-collection' && (
+                          <p className={`text-xs font-semibold mt-1 ${darkMode ? 'text-yellow-300' : 'text-yellow-700'}`}>Pending collection — please collect your clothes</p>
+                        )}
                       </>
                     )} 
                   </div>
