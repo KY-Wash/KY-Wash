@@ -14,24 +14,18 @@ function initializeGlobalTimer() {
     return; // Already initialized
   }
   
-  // Run a global timer every 1 second to decrement all running machines based on system time
+  // Run a global timer every 1 second to update all running machines based on finishTimestamp
   globalServerTimer = setInterval(() => {
     const state = getAppState();
     const now = Date.now();
     let stateChanged = false;
     
     state.machines.forEach((machine) => {
-      const key = `${machine.type}-${machine.id}`;
-      
       if (machine.status === 'running') {
-        const startTime = machineStartTimes.get(key);
-        if (startTime !== undefined) {
-          // Calculate time elapsed in seconds based on system clock
-          const elapsedSeconds = Math.floor((now - startTime) / 1000);
-          const totalDurationSeconds = machine.originalDuration ? machine.originalDuration * 60 : machine.timeLeft;
-          
-          // Calculate remaining time based on system clock
-          const newTimeLeft = Math.max(0, totalDurationSeconds - elapsedSeconds);
+        // Use finishTimestamp if available (preferred method for sync across restarts)
+        if (machine.finishTimestamp !== undefined && machine.finishTimestamp > 0) {
+          const remainingMs = Math.max(0, machine.finishTimestamp - now);
+          const newTimeLeft = Math.ceil(remainingMs / 1000);
           
           if (newTimeLeft !== machine.timeLeft) {
             machine.timeLeft = newTimeLeft;
@@ -39,8 +33,10 @@ function initializeGlobalTimer() {
           }
           
           // If timer reached 0, transition to pending-collection
-          if (machine.timeLeft === 0 && machine.status === 'running') {
+          if (newTimeLeft === 0 && machine.status === 'running') {
             machine.status = 'pending-collection';
+            machine.timeLeft = 0;
+            machine.finishTimestamp = undefined;
             stateChanged = true;
 
             // Update usage history to 'Completed'
@@ -54,6 +50,57 @@ function initializeGlobalTimer() {
               historyRecord.status = 'Completed';
               // Sync completion status to Supabase
               updateSupabaseRecordStatus(machine.userStudentId, machine.type, machine.id, 'Completed');
+            }
+
+            // Persist machine state to Supabase
+            (async () => {
+              try {
+                const svc = getServiceSupabaseClient();
+                if (svc) {
+                  await svc.from('machines').update({ 
+                    status: 'pending-collection', 
+                    time_left: 0,
+                    finish_timestamp: null 
+                  }).match({ type: machine.type, id: machine.id });
+                }
+              } catch (err) {
+                console.error('Failed to persist machine completion to Supabase:', err);
+              }
+            })();
+          }
+        } else {
+          // Fallback: use machineStartTimes if finishTimestamp is not set
+          const startTime = machineStartTimes.get(`${machine.type}-${machine.id}`);
+          if (startTime !== undefined) {
+            // Calculate time elapsed in seconds based on system clock
+            const elapsedSeconds = Math.floor((now - startTime) / 1000);
+            const totalDurationSeconds = machine.originalDuration ? machine.originalDuration * 60 : machine.timeLeft;
+            
+            // Calculate remaining time based on system clock
+            const newTimeLeft = Math.max(0, totalDurationSeconds - elapsedSeconds);
+            
+            if (newTimeLeft !== machine.timeLeft) {
+              machine.timeLeft = newTimeLeft;
+              stateChanged = true;
+            }
+            
+            // If timer reached 0, transition to pending-collection
+            if (newTimeLeft === 0 && machine.status === 'running') {
+              machine.status = 'pending-collection';
+              stateChanged = true;
+
+              // Update usage history to 'Completed'
+              const historyRecord = state.usageHistory.find(h => 
+                h.studentId === machine.userStudentId && 
+                h.machineType === machine.type && 
+                h.machineId === machine.id &&
+                h.status === 'In Progress'
+              );
+              if (historyRecord) {
+                historyRecord.status = 'Completed';
+                // Sync completion status to Supabase
+                updateSupabaseRecordStatus(machine.userStudentId, machine.type, machine.id, 'Completed');
+              }
             }
           }
         }
@@ -228,6 +275,32 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           }));
         }
 
+        // Recover running machines from database with their finishTimestamps
+        const { data: runningMachines, error: machinesErr } = await svc.from('machines').select('*').eq('status', 'running');
+        if (!machinesErr && runningMachines) {
+          const state = getAppState();
+          (runningMachines as any[]).forEach(dbMachine => {
+            const stateIdx = state.machines.findIndex(m => m.id === String(dbMachine.id) && m.type === dbMachine.type);
+            if (stateIdx >= 0) {
+              // Restore running machine state from database
+              state.machines[stateIdx] = {
+                ...state.machines[stateIdx],
+                status: 'running',
+                timeLeft: dbMachine.time_left || 0,
+                mode: dbMachine.mode || '',
+                originalDuration: dbMachine.original_duration,
+                finishTimestamp: dbMachine.finish_timestamp, // Restore finish timestamp
+                userStudentId: dbMachine.user_student_id || '',
+                userPhone: dbMachine.user_phone || '',
+              };
+              // Also start the server timer for this machine
+              if (dbMachine.finish_timestamp && dbMachine.finish_timestamp > Date.now()) {
+                startServerTimer(String(dbMachine.id), dbMachine.type, dbMachine.original_duration || 0);
+              }
+            }
+          });
+        }
+
         // Persist back to state file
         updateAppState(getAppState());
       } catch (err) {
@@ -267,12 +340,15 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           );
           if (machine && machine.status === 'available') {
             const durationInSeconds = data.duration * 60;
+            const finishTimestamp = Date.now() + durationInSeconds * 1000;
+            
             machine.status = 'running';
             machine.mode = data.mode;
             machine.timeLeft = durationInSeconds;
             machine.originalDuration = data.duration; // Store original duration for accurate timer
             machine.userStudentId = data.studentId;
             machine.userPhone = data.phoneNumber;
+            machine.finishTimestamp = finishTimestamp; // Store finish timestamp for persistence
             
             // Calculate spending (both washers and dryers charge same: Normal=5, Extra=6)
             const spending = data.mode === 'Normal' ? 5 : data.mode.includes('Extra') ? 6 : 0;
@@ -316,6 +392,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
                       locked: false,
                       user_id: userUuid,
                       original_duration: data.duration,
+                      finish_timestamp: finishTimestamp, // Persist the finish timestamp
                     }
                   ], { onConflict: 'type,id' });
                 }
@@ -368,13 +445,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             machine.mode = '';
             machine.userStudentId = '';
             machine.userPhone = '';
+            machine.finishTimestamp = undefined;
 
             // Persist machine reset to Supabase
             (async () => {
               try {
                 const svc = getServiceSupabaseClient();
                 if (svc) {
-                  await svc.from('machines').update({ status: 'available', time_left: 0, user_id: null, mode: null }).match({ type: data.machineType, id: data.machineId });
+                  await svc.from('machines').update({ status: 'available', time_left: 0, user_id: null, mode: null, finish_timestamp: null }).match({ type: data.machineType, id: data.machineId });
                 }
               } catch (err) {
                 console.error('Failed to persist machine cancellation to Supabase:', err);

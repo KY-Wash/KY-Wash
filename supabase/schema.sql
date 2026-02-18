@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS machines (
   locked boolean DEFAULT false,
   user_id uuid REFERENCES users(id) ON DELETE SET NULL,
   original_duration int,
+  finish_timestamp bigint, -- Unix timestamp in milliseconds when cycle will complete
   updated_at timestamptz DEFAULT now(),
   PRIMARY KEY (type, id)
 );

@@ -36,6 +36,7 @@ export interface Machine {
   userStudentId: string;
   userPhone: string;
   originalDuration?: number;
+  finishTimestamp?: number; // Unix timestamp in milliseconds when cycle will complete
 }
 
 export interface WaitlistEntry {

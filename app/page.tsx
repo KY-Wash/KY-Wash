@@ -246,8 +246,10 @@ const KYWashSystem = () => {
                 type: m.type,
                 status: m.status,
                 timeLeft: m.timeLeft,
-                // If server provides a timeLeft for a running machine, convert it into a finishTimestamp
-                finishTimestamp: m.status === 'running' && typeof m.timeLeft === 'number' ? Date.now() + m.timeLeft * 1000 : undefined,
+                // Use finishTimestamp from server if available (best for sync), otherwise compute from timeLeft
+                finishTimestamp: m.status === 'running' && (m.finishTimestamp || m.timeLeft) 
+                  ? (m.finishTimestamp || Date.now() + m.timeLeft * 1000)
+                  : undefined,
                 mode: m.mode || null,
                 locked: m.locked,
                 userStudentId: m.userStudentId || null,
@@ -363,12 +365,10 @@ const KYWashSystem = () => {
                 userStudentId: m.userStudentId || null,
                 userPhone: m.userPhone || null,
                 originalDuration: m.originalDuration || undefined,
-                // Preserve finishTimestamp for running machines to keep timer synchronized
-                finishTimestamp: (m.status === 'running' && prevMachine?.finishTimestamp) 
-                  ? prevMachine.finishTimestamp 
-                  : (m.status === 'running' && !prevMachine?.finishTimestamp) 
-                    ? Date.now() + (m.timeLeft || 0) * 1000
-                    : undefined,
+                // Use server's finishTimestamp if available (best source of truth), otherwise preserve local or compute new
+                finishTimestamp: m.status === 'running' 
+                  ? (m.finishTimestamp || prevMachine?.finishTimestamp || Date.now() + (m.timeLeft || 0) * 1000)
+                  : undefined,
               }; 
             });
           });
@@ -441,9 +441,10 @@ const KYWashSystem = () => {
     // Fetch initial state
     fetchState();
 
-    // Poll every 2000ms (2 seconds) for near real-time visibility of machine state changes
+    // Poll every 1500ms (1.5 seconds) for near real-time visibility of machine state changes
     // This ensures all users see start/cancel operations, machine changes, and waiting list updates quickly
-    pollingIntervalRef.current = setInterval(fetchState, 2000);
+    // Shorter interval reduces chances of timer stopping mid-cycle
+    pollingIntervalRef.current = setInterval(fetchState, 1500);
 
     return () => {
       if (pollingIntervalRef.current) {
@@ -1111,7 +1112,7 @@ const KYWashSystem = () => {
       studentId: user.studentId,
       timestamp: Date.now(),
       spending: spending,
-      status: 'Completed'
+      status: 'In Progress'
     };
 
     // Add to local history
