@@ -709,27 +709,22 @@ const KYWashSystem = () => {
   const reminderSentRef = useRef<Set<string>>(new Set());
 
   // Helper to compute seconds left for display using finishTimestamp for synchronization
-  // Uses a small bias (250ms) to avoid rounding up at boundaries and returns a normal decreasing timer
   const getTimeLeftSeconds = (machine: Machine): number => {
     // If no finish timestamp, use timeLeft as fallback
     if (!machine.finishTimestamp) {
       return Math.max(0, Math.floor((machine.timeLeft || 0)));
     }
 
-    // Subtract a small bias (250ms) before dividing to avoid +1s rounding edge cases
-    const biasMs = 250;
-    const remainingMs = Math.max(0, machine.finishTimestamp - nowTick - biasMs);
-    const remainingSeconds = Math.floor(remainingMs / 1000);
-    return remainingSeconds;
-  }; 
+    const remainingMs = Math.max(0, machine.finishTimestamp - nowTick);
+    return Math.max(0, Math.ceil(remainingMs / 1000));
+  };
 
   // Auto-transition running machines to pending-collection when timer expires (synchronized across all clients)
   useEffect(() => {
     machines.forEach((machine) => {
       if (machine.status === 'running' && machine.finishTimestamp) {
-        const secondsLeft = getTimeLeftSeconds(machine);
-        // When timer reaches 0 or goes negative, transition to pending-collection
-        if (secondsLeft <= 0) {
+        const isExpired = nowTick >= machine.finishTimestamp;
+        if (isExpired) {
           // Only transition once
           const machineKey = `${machine.type}-${machine.id}`;
           if (!notifiedMachinesRef.current.has(machineKey)) {
@@ -738,7 +733,7 @@ const KYWashSystem = () => {
             // Update machine status to pending-collection and make the time left explicit
             setMachines((prev) => prev.map((m) =>
               m.id === machine.id && m.type === machine.type
-                ? { ...m, status: 'pending-collection', timeLeft: 0, finishTimestamp: Date.now() }
+                ? { ...m, status: 'pending-collection', timeLeft: 0, finishTimestamp: machine.finishTimestamp }
                 : m
             ));
 

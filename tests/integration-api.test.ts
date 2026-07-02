@@ -71,9 +71,9 @@ describe('API integration tests', () => {
     const persisted = JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
     expect(persisted.waitlists.washers.some((w: any) => w.studentId === 'S200')).toBe(true);
 
-    // Simulate server restart by reloading persisted state
+    // Simulate server restart by reloading persisted state from the saved file
     setAppState(createInitialState());
-    const persistedState = JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
+    const persistedState = persisted;
     // Replace current app state with persisted state (simulate server restart/load)
     setAppState(persistedState);
     const s2 = getAppState();

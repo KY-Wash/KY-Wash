@@ -93,7 +93,7 @@ async function syncUsageRecordToSupabase(record: any) {
         'apikey': supabaseAnonKey,
       },
       body: JSON.stringify({
-        userStudentID: record.studentId,
+        studentid: record.studentId,
         phone_number: record.phoneNumber || '',
         type: record.machineType,
         machine_id: record.machineId,
@@ -102,6 +102,8 @@ async function syncUsageRecordToSupabase(record: any) {
         spending: record.spending,
         status: record.status,
         date: record.date,
+        day: record.day,
+        time: record.time,
         timestamp: record.timestamp,
       }),
     });
@@ -127,7 +129,7 @@ async function updateSupabaseRecordStatus(studentId: string, machineType: string
 
     // Build query to find and update the record
     const response = await fetch(
-      `${supabaseUrl}/rest/v1/usage_history?userStudentID=eq.${studentId}&type=eq.${machineType}&machine_id=eq.${machineId}&status=eq.In%20Progress`,
+      `${supabaseUrl}/rest/v1/usage_history?studentid=eq.${studentId}&type=eq.${machineType}&machine_id=eq.${machineId}&status=eq.In%20Progress`,
       {
         method: 'PATCH',
         headers: {
@@ -241,6 +243,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         // Restore server-side start times for running machines so the global timer can continue
         try {
           recoverStartTimes(getAppState());
+          initializeGlobalTimer();
         } catch (err) {
           console.warn('Failed to restore machine start times after seeding state:', err);
         }
