@@ -2462,12 +2462,22 @@ const KYWashSystem = () => {
             <div className={`rounded-lg shadow-md p-6 transition-colors ${
               darkMode ? 'bg-gray-800' : 'bg-white'
             }`}>
-              <h2 className={`text-2xl font-bold mb-4 flex items-center gap-2 ${
-                darkMode ? 'text-white' : 'text-gray-800'
-              }`}>
-                <BarChart3 className="w-6 h-6" />
-                Analytics Dashboard
-              </h2>
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <h2 className={`text-2xl font-bold flex items-center gap-2 ${
+                  darkMode ? 'text-white' : 'text-gray-800'
+                }`}>
+                  <BarChart3 className="w-6 h-6" />
+                  Analytics Dashboard
+                </h2>
+                <a
+                  href="/api/washer-cycles.xlsx"
+                  className={`px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                    darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'
+                  }`}
+                >
+                  Download monthly Excel
+                </a>
+              </div>
               
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
                 {/* Total Washes */}

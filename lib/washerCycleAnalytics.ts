@@ -42,11 +42,15 @@ function createWorkbook(filePath: string) {
   return workbook;
 }
 
-function readWorkbook(filePath: string) {
+export function ensureWasherCycleExportFile(filePath = getWasherCycleExportPath()) {
   if (!fs.existsSync(filePath)) {
-    return createWorkbook(filePath);
+    createWorkbook(filePath);
   }
+  return filePath;
+}
 
+function readWorkbook(filePath: string) {
+  ensureWasherCycleExportFile(filePath);
   return readFile(filePath);
 }
 

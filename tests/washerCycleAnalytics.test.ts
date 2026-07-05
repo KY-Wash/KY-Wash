@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { appendWasherCycle, purgeOldWasherCycles, getWasherCycleExportPath } from '../lib/washerCycleAnalytics';
+import { appendWasherCycle, purgeOldWasherCycles, getWasherCycleExportPath, ensureWasherCycleExportFile } from '../lib/washerCycleAnalytics';
 
 describe('washer cycle analytics', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ky-wash-analytics-'));
@@ -51,6 +51,12 @@ describe('washer cycle analytics', () => {
 
     const purged = purgeOldWasherCycles(exportPath, 30);
     expect(purged).toBe(1);
+    expect(fs.existsSync(exportPath)).toBe(true);
+  });
+
+  it('creates the export file even before any cycles are recorded', () => {
+    const exportPath = path.join(tempDir, 'empty-export.xlsx');
+    ensureWasherCycleExportFile(exportPath);
     expect(fs.existsSync(exportPath)).toBe(true);
   });
 
