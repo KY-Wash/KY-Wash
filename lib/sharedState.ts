@@ -73,6 +73,7 @@ export interface UsageHistory {
   timestamp: number;
   spending?: number;
   status?: 'In Progress' | 'Completed' | 'cancelled';
+  analyticsLogged?: boolean;
 }
 
 export interface User {

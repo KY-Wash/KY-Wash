@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { getAppState, updateAppState, loadPersistedState } from '@/lib/sharedState';
 import { insertChatMessageToDB, deleteChatMessageFromDB, insertFeedbackToDB, markFeedbackDoneInDB, reportFeedbackInDB, deleteFeedbackFromDB, getServiceSupabaseClient } from '@/lib/supabase';
 import { dedupeWaitlistEntries } from '@/lib/waitlistUtils';
+import { appendWasherCycle, purgeOldWasherCycles } from '@/lib/washerCycleAnalytics';
 
 // Timer utilities are provided in a testable module
 import { machineStartTimes, tickServerTimers, recoverStartTimes, computeStateForClient, startServerTimer as startServerTimerUtil, stopServerTimer as stopServerTimerUtil } from '@/lib/serverTimers';
@@ -31,6 +32,7 @@ function initializeGlobalTimer() {
         if (machine.status === 'pending-collection') {
           // Best-effort sync to Supabase (idempotent on server side)
           updateSupabaseRecordStatus(machine.userStudentId, machine.type, machine.id, 'Completed');
+          recordCompletedWasherCycle(state, machine);
         }
       });
 
@@ -72,6 +74,37 @@ function startServerTimer(machineId: string, machineType: string, initialDuratio
 
 function stopServerTimer(machineId: string, machineType: string) {
   stopServerTimerUtil(machineId, machineType);
+}
+
+function recordCompletedWasherCycle(state: any, machine: any) {
+  if (machine?.type !== 'washer' || !machine?.userStudentId) {
+    return;
+  }
+
+  const historyRecord = state.usageHistory.find((h: any) => 
+    h.studentId === machine.userStudentId &&
+    h.machineType === machine.type &&
+    h.machineId === machine.id &&
+    h.status === 'In Progress'
+  );
+
+  if (!historyRecord || historyRecord.analyticsLogged) {
+    return;
+  }
+
+  historyRecord.analyticsLogged = true;
+  appendWasherCycle({
+    machineId: String(machine.id),
+    machineType: machine.type,
+    studentId: machine.userStudentId,
+    phoneNumber: machine.userPhone || '',
+    mode: machine.mode || '',
+    startedAt: machine.finishTimestamp ? machine.finishTimestamp - ((machine.originalDuration || 0) * 60 * 1000) : Date.now(),
+    completedAt: Date.now(),
+    durationMinutes: machine.originalDuration || 0,
+    status: 'Completed',
+  });
+  purgeOldWasherCycles();
 }
 
 // Helper function to sync usage record to Supabase
@@ -309,6 +342,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
               timestamp: now.getTime(),
               spending: spending,
               status: 'In Progress' as const,
+              analyticsLogged: false,
             };
             state.usageHistory.push(usageRecord);
             
@@ -608,6 +642,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
               // Sync completion status to Supabase
               updateSupabaseRecordStatus(machine.userStudentId, machine.type, machine.id, 'Completed');
             }
+
+            recordCompletedWasherCycle(state, machine);
 
             // Persist changes to Supabase
             (async () => {
