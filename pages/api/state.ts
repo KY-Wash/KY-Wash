@@ -3,6 +3,7 @@ import { getAppState, updateAppState, loadPersistedState } from '@/lib/sharedSta
 import { insertChatMessageToDB, deleteChatMessageFromDB, insertFeedbackToDB, markFeedbackDoneInDB, reportFeedbackInDB, deleteFeedbackFromDB, getServiceSupabaseClient } from '@/lib/supabase';
 import { dedupeWaitlistEntries } from '@/lib/waitlistUtils';
 import { appendWasherCycle, purgeOldWasherCycles } from '@/lib/washerCycleAnalytics';
+import { syncMachineSessionToNeon } from '@/lib/neon';
 
 // Timer utilities are provided in a testable module
 import { machineStartTimes, tickServerTimers, recoverStartTimes, computeStateForClient, startServerTimer as startServerTimerUtil, stopServerTimer as stopServerTimerUtil } from '@/lib/serverTimers';
@@ -318,18 +319,19 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           );
           if (machine && machine.status === 'available') {
             const durationInSeconds = data.duration * 60;
+            const now = new Date();
             machine.status = 'running';
             machine.mode = data.mode;
             machine.timeLeft = durationInSeconds;
             machine.originalDuration = data.duration; // Store original duration for accurate timer
             machine.userStudentId = data.studentId;
             machine.userPhone = data.phoneNumber;
+            machine.startedAt = now.getTime();
             
             // Calculate spending (both washers and dryers charge same: Normal=5, Extra=6)
             const spending = data.mode === 'Normal' ? 5 : data.mode.includes('Extra') ? 6 : 0;
             
             // Record in usage history immediately when machine starts
-            const now = new Date();
             const usageRecord = {
               id: `${Date.now()}-${Math.random()}`,
               machineType: data.machineType,
@@ -348,6 +350,16 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             
             // Sync to Supabase (REST helper)
             syncUsageRecordToSupabase(usageRecord);
+            void syncMachineSessionToNeon({
+              machineType: data.machineType,
+              machineId: data.machineId,
+              studentId: data.studentId,
+              phoneNumber: data.phoneNumber,
+              mode: data.mode,
+              durationMinutes: data.duration,
+              startTime: now.getTime(),
+              status: 'running',
+            });
 
             // Persist machine row and link user (if found) using service-role client
             (async () => {
@@ -420,6 +432,17 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             machine.mode = '';
             machine.userStudentId = '';
             machine.userPhone = '';
+
+            void syncMachineSessionToNeon({
+              machineType: data.machineType,
+              machineId: data.machineId,
+              studentId: data.studentId,
+              phoneNumber: data.phoneNumber,
+              mode: machine.mode || '',
+              durationMinutes: machine.originalDuration || data.duration,
+              startTime: machine.startedAt || Date.now(),
+              status: 'cancelled',
+            });
 
             // Persist machine reset to Supabase
             (async () => {
@@ -642,6 +665,17 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
               // Sync completion status to Supabase
               updateSupabaseRecordStatus(machine.userStudentId, machine.type, machine.id, 'Completed');
             }
+
+            void syncMachineSessionToNeon({
+              machineType: data.machineType,
+              machineId: data.machineId,
+              studentId: machine.userStudentId || data.studentId,
+              phoneNumber: machine.userPhone || '',
+              mode: machine.mode || '',
+              durationMinutes: machine.originalDuration || data.duration,
+              startTime: machine.startedAt || Date.now(),
+              status: 'completed',
+            });
 
             recordCompletedWasherCycle(state, machine);
 
