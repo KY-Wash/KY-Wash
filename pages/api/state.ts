@@ -642,33 +642,30 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         }
 
         case 'machine-complete': {
-          // Client reported a machine completion (timer expired locally). Promote to server state
           const machine = state.machines.find(
-            (m) => m.id === data.machineId && m.type === data.machineType
+            (m) => String(m.id) === String(data.machineId) && m.type === data.machineType
           );
 
           if (machine && machine.status === 'running') {
             machine.status = 'pending-collection';
             machine.timeLeft = 0;
             machine.finishTimestamp = Date.now();
-            stopServerTimer(data.machineId, data.machineType);
+            stopServerTimer(String(data.machineId), data.machineType);
 
-            // Mark usage history as Completed where appropriate
-            const historyRecord = state.usageHistory.find(h => 
-              h.studentId === machine.userStudentId && 
-              h.machineType === machine.type && 
+            const historyRecord = state.usageHistory.find((h: any) =>
+              h.studentId === machine.userStudentId &&
+              h.machineType === machine.type &&
               h.machineId === machine.id &&
               h.status === 'In Progress'
             );
             if (historyRecord) {
               historyRecord.status = 'Completed';
-              // Sync completion status to Supabase
               updateSupabaseRecordStatus(machine.userStudentId, machine.type, machine.id, 'Completed');
             }
 
             void syncMachineSessionToNeon({
               machineType: data.machineType,
-              machineId: data.machineId,
+              machineId: String(data.machineId),
               studentId: machine.userStudentId || data.studentId,
               phoneNumber: machine.userPhone || '',
               mode: machine.mode || '',
@@ -679,7 +676,6 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
             recordCompletedWasherCycle(state, machine);
 
-            // Persist changes to Supabase
             (async () => {
               try {
                 const svc = getServiceSupabaseClient();
@@ -697,41 +693,32 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         }
 
         case 'clothes-collected': {
-          // Backward compatible handler: mark machine as available if the original user confirms
           const machine = state.machines.find(
-            (m) => m.id === data.machineId && m.type === data.machineType
+            (m) => String(m.id) === String(data.machineId) && m.type === data.machineType
           );
-          if (machine && machine.userStudentId === data.studentId) {
+          if (machine && machine.status === 'pending-collection') {
             state.stats.totalWashes += 1;
 
-            // Stop server timer
-            stopServerTimer(data.machineId, data.machineType);
-            
-            // Free up the machine
+            stopServerTimer(String(data.machineId), data.machineType);
+
             machine.status = 'available';
             machine.timeLeft = 0;
             machine.mode = '';
             machine.userStudentId = '';
             machine.userPhone = '';
+            machine.finishTimestamp = undefined;
 
-            // Clear any pending collection status for this machine
             if (!state.machineCollectionStatus) state.machineCollectionStatus = {};
             delete state.machineCollectionStatus[`${data.machineType}-${data.machineId}`];
 
-            // Persist changes: mark usage history Completed and update machines table
             (async () => {
               try {
-                // Mark usage record Completed in Supabase
                 updateSupabaseRecordStatus(data.studentId, data.machineType, data.machineId, 'Completed');
 
                 const svc = getServiceSupabaseClient();
                 if (svc) {
                   await svc.from('machines').update({ status: 'available', time_left: 0, user_id: null, mode: null }).match({ type: data.machineType, id: data.machineId });
-
-                  // Also insert a machine_collections record for audit
                   await svc.from('machine_collections').insert([{ machine_type: data.machineType, machine_id: data.machineId, status: 'collected' }]);
-
-                  // Insert audit log entry for clothes-collected
                   await svc.from('audit_logs').insert([{ action: 'clothes-collected', machine_type: data.machineType, machine_id: data.machineId, initiated_by: data.studentId, timestamp: Date.now() }]);
                 }
               } catch (err) {
@@ -922,18 +909,18 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         }
 
         case 'machine-collection-status': {
-          // status: 'coming' | 'collected'
           const { machineId, machineType, status, studentId } = data;
           const machine = state.machines.find(
-            (m) => m.id === machineId && m.type === machineType
+            (m) => String(m.id) === String(machineId) && m.type === machineType
           );
           const key = `${machineType}-${machineId}`;
           if (!state.machineCollectionStatus) state.machineCollectionStatus = {};
 
           if (status === 'coming') {
-            state.machineCollectionStatus[key] = { status: 'coming', user: studentId };
+            if (machine && machine.status === 'pending-collection') {
+              state.machineCollectionStatus[key] = { status: 'coming', user: studentId };
+            }
 
-            // Persist collection 'coming' status
             (async () => {
               try {
                 const svc = getServiceSupabaseClient();
@@ -948,41 +935,34 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             })();
 
           } else if (status === 'collected') {
-            // Accept collected reports from anyone - mark usage completed and free machine
-            // Find in-progress usage record and mark Completed
-            const historyRecord = state.usageHistory.find(h => h.machineType === machineType && h.machineId === machineId && h.status === 'In Progress');
-            if (historyRecord) historyRecord.status = 'Completed';
+            if (machine && machine.status === 'pending-collection') {
+              const historyRecord = state.usageHistory.find((h: any) => h.machineType === machineType && h.machineId === String(machineId) && h.status === 'In Progress');
+              if (historyRecord) historyRecord.status = 'Completed';
 
-            // Update stats
-            state.stats.totalWashes += 1;
+              state.stats.totalWashes += 1;
+              stopServerTimer(String(machineId), machineType);
 
-            // Stop server-side timer
-            stopServerTimer(machineId, machineType);
-
-            if (machine) {
               machine.status = 'available';
               machine.timeLeft = 0;
               machine.mode = '';
               machine.userStudentId = '';
               machine.userPhone = '';
+              machine.finishTimestamp = undefined;
             }
 
             delete state.machineCollectionStatus[key];
 
-            // Persist collection record and update usage status in Supabase
             (async () => {
               try {
                 const svc = getServiceSupabaseClient();
                 if (svc) {
-                  // Insert collection record
                   await svc.from('machine_collections').insert([{ machine_type: machineType, machine_id: machineId, status: 'collected' }]);
 
-                  // Mark corresponding usage history as Completed in Supabase
+                  const historyRecord = state.usageHistory.find((h: any) => h.machineType === machineType && h.machineId === String(machineId) && h.status === 'In Progress');
                   if (historyRecord && historyRecord.studentId) {
                     updateSupabaseRecordStatus(historyRecord.studentId, machineType, machineId, 'Completed');
                   }
 
-                  // Update machines table to available
                   await svc.from('machines').update({ status: 'available', time_left: 0, user_id: null, mode: null }).match({ type: machineType, id: machineId });
                 }
               } catch (err) {
