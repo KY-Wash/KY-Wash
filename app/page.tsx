@@ -244,21 +244,24 @@ const KYWashSystem = () => {
               newState.machines.map((m: any) => {
                 const id = parseInt(m.id);
                 const type = m.type;
-                const serverFinish = m.finishTimestamp ?? (m.status === 'running' && typeof m.timeLeft === 'number' && m.timeLeft > 0 ? Date.now() + m.timeLeft * 1000 : undefined);
-
-                // Find previous finishTimestamp to avoid tiny jitter from server polling
                 const prev = prevMachines.find((pm) => pm.id === id && pm.type === type);
-                let finishTimestamp = serverFinish;
-                if (prev && prev.finishTimestamp && serverFinish) {
-                  // Always pick the earlier timestamp between client and server to avoid upward flicker
-                  finishTimestamp = Math.min(prev.finishTimestamp, serverFinish);
+                let finishTimestamp: number | undefined;
+
+                if (m.status === 'running') {
+                  finishTimestamp = typeof m.finishTimestamp === 'number'
+                    ? m.finishTimestamp
+                    : (typeof m.timeLeft === 'number' && m.timeLeft > 0 ? Date.now() + m.timeLeft * 1000 : undefined);
                 }
+
+                const normalizedTimeLeft = m.status === 'running' && typeof m.timeLeft === 'number'
+                  ? Math.max(0, Math.floor(m.timeLeft))
+                  : 0;
 
                 return {
                   id,
                   type,
                   status: m.status,
-                  timeLeft: m.timeLeft,
+                  timeLeft: normalizedTimeLeft,
                   finishTimestamp,
                   mode: m.mode || null,
                   locked: m.locked,
@@ -365,20 +368,24 @@ const KYWashSystem = () => {
               }
 
               // Accept server state for all other cases (this ensures we see other users' starts)
-              const serverFinish = m.finishTimestamp ?? (m.status === 'running' && typeof m.timeLeft === 'number' && m.timeLeft > 0 ? Date.now() + m.timeLeft * 1000 : undefined);
+              let finishTimestamp: number | undefined;
+              if (m.status === 'running') {
+                finishTimestamp = typeof m.finishTimestamp === 'number'
+                  ? m.finishTimestamp
+                  : (typeof m.timeLeft === 'number' && m.timeLeft > 0 ? Date.now() + m.timeLeft * 1000 : undefined);
+              }
 
               return {
                 id: parseInt(m.id),
                 type: m.type,
                 status: m.status,
-                // Defer actual displayed remaining time to finishTimestamp (keeps clients synchronized)
-                timeLeft: m.timeLeft || 0,
+                timeLeft: m.status === 'running' && typeof m.timeLeft === 'number' ? Math.max(0, Math.floor(m.timeLeft)) : 0,
                 mode: m.mode || null,
                 locked: m.locked,
                 userStudentId: m.userStudentId || null,
                 userPhone: m.userPhone || null,
                 originalDuration: m.originalDuration || undefined,
-                finishTimestamp: serverFinish,
+                finishTimestamp,
               }; 
             });
           });
@@ -467,7 +474,7 @@ const KYWashSystem = () => {
   const [nowTick, setNowTick] = useState<number>(Date.now());
 
   useEffect(() => {
-    const interval = setInterval(() => setNowTick(Date.now()), 1000);
+    const interval = setInterval(() => setNowTick(Date.now()), 250);
     return () => clearInterval(interval);
   }, []);
 
@@ -705,6 +712,8 @@ const KYWashSystem = () => {
 
   // Track machines that have already triggered completion notification
   const notifiedMachinesRef = useRef<Set<string>>(new Set());
+  // Track machines that have already transitioned to pending-collection once
+  const transitionHandledRef = useRef<Set<string>>(new Set());
   // Track machines that have already sent 5-minute reminder
   const reminderSentRef = useRef<Set<string>>(new Set());
 
@@ -722,35 +731,29 @@ const KYWashSystem = () => {
   // Auto-transition running machines to pending-collection when timer expires (synchronized across all clients)
   useEffect(() => {
     machines.forEach((machine) => {
-      if (machine.status === 'running' && machine.finishTimestamp) {
-        const isExpired = nowTick >= machine.finishTimestamp;
-        if (isExpired) {
-          // Only transition once
-          const machineKey = `${machine.type}-${machine.id}`;
-          if (!notifiedMachinesRef.current.has(machineKey)) {
-            notifiedMachinesRef.current.add(machineKey);
-            
-            // Update machine status to pending-collection and make the time left explicit
-            setMachines((prev) => prev.map((m) =>
-              m.id === machine.id && m.type === machine.type
-                ? { ...m, status: 'pending-collection', timeLeft: 0, finishTimestamp: machine.finishTimestamp }
-                : m
-            ));
+      const machineKey = `${machine.type}-${machine.id}`;
+      if (machine.status !== 'running' || !machine.finishTimestamp) {
+        return;
+      }
 
-            // Notify server so other clients get the completion state (helps avoid flicker)
-            if (socketRef.current?.emit) {
-              try {
-                socketRef.current.emit('machine-complete', {
-                  machineId: String(machine.id),
-                  machineType: machine.type
-                });
-              } catch (err) {
-                console.warn('Failed to emit machine-complete:', err);
-              }
-            }
+      const remainingMs = machine.finishTimestamp - nowTick;
+      if (remainingMs <= 0 && !transitionHandledRef.current.has(machineKey)) {
+        transitionHandledRef.current.add(machineKey);
 
-            // Stop continuous ringing if still going
-            stopContinuousNotificationRing();
+        setMachines((prev) => prev.map((m) =>
+          m.id === machine.id && m.type === machine.type
+            ? { ...m, status: 'pending-collection', timeLeft: 0, finishTimestamp: undefined }
+            : m
+        ));
+
+        if (socketRef.current?.emit) {
+          try {
+            socketRef.current.emit('machine-complete', {
+              machineId: String(machine.id),
+              machineType: machine.type
+            });
+          } catch (err) {
+            console.warn('Failed to emit machine-complete:', err);
           }
         }
       }
@@ -780,19 +783,18 @@ const KYWashSystem = () => {
           notifiedMachinesRef.current.add(machineKey);
           playNotificationSound();
           startContinuousNotificationRing();
-          // Show alert to user
           const machineType = machine.type.charAt(0).toUpperCase() + machine.type.slice(1);
           const message = `🔔 Your ${machineType} ${machine.id} cycle is complete! Please collect your clothes.`;
           alert(message);
           showNotification(message);
-          stopContinuousNotificationRing();
         }
       }
       
-      // Reset notification flags when machine is used again
-      if (machine.status === 'running' && notifiedMachinesRef.current.has(machineKey)) {
+      // Reset notification flags when machine is used again or reset
+      if ((machine.status === 'running' || machine.status === 'available') && (notifiedMachinesRef.current.has(machineKey) || reminderSentRef.current.has(machineKey) || transitionHandledRef.current.has(machineKey))) {
         notifiedMachinesRef.current.delete(machineKey);
         reminderSentRef.current.delete(machineKey);
+        transitionHandledRef.current.delete(machineKey);
         stopContinuousNotificationRing();
       } 
     });
@@ -1118,6 +1120,19 @@ const KYWashSystem = () => {
   const startMachine = (machineId: number, machineType: 'washer' | 'dryer', mode: Mode): void => {
     if (!user) return;
 
+    const targetMachine = machines.find((m) => m.id === machineId && m.type === machineType);
+    if (!targetMachine) return;
+
+    if (targetMachine.locked) {
+      alert('This machine is currently unavailable.');
+      return;
+    }
+
+    if (targetMachine.status !== 'available') {
+      alert('This machine is already in use. Please wait for the current cycle to finish or collect the clothes first.');
+      return;
+    }
+
     // Check if user is already using a machine
     const userUsingMachine = machines.some((m) => 
       m.userStudentId === user.studentId && 
@@ -1150,13 +1165,18 @@ const KYWashSystem = () => {
       });
     }
 
+    const machineKey = `${machineType}-${machineId}`;
+    transitionHandledRef.current.delete(machineKey);
+    notifiedMachinesRef.current.delete(machineKey);
+    reminderSentRef.current.delete(machineKey);
+    stopContinuousNotificationRing();
+
     setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
       machine.id === machineId && machine.type === machineType
         ? {
             ...machine,
             status: 'running',
             timeLeft: mode.duration * 60,
-            // canonical finish time used for all clients
             finishTimestamp: Date.now() + mode.duration * 60 * 1000,
             mode: mode.name,
             userStudentId: user.studentId,
@@ -1218,6 +1238,12 @@ const KYWashSystem = () => {
       });
     }
 
+    const machineKey = `${machineType}-${machineId}`;
+    transitionHandledRef.current.delete(machineKey);
+    notifiedMachinesRef.current.delete(machineKey);
+    reminderSentRef.current.delete(machineKey);
+    stopContinuousNotificationRing();
+
     setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
       machine.id === machineId && machine.type === machineType
         ? { ...machine, status: 'available', timeLeft: 0, finishTimestamp: undefined, mode: null, userStudentId: null, userPhone: null, originalDuration: undefined, collectionStatus: null }
@@ -1254,6 +1280,12 @@ const KYWashSystem = () => {
 
       showNotification(`${user.studentId} is coming to collect clothes from ${machineType} ${machineId}`);
     } else if (status === 'collected') {
+      const machineKey = `${machineType}-${machineId}`;
+      transitionHandledRef.current.delete(machineKey);
+      notifiedMachinesRef.current.delete(machineKey);
+      reminderSentRef.current.delete(machineKey);
+      stopContinuousNotificationRing();
+
       // Optimistically mark machine as available and clear collection status
       setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
         machine.id === machineId && machine.type === machineType
@@ -1261,6 +1293,7 @@ const KYWashSystem = () => {
               ...machine, 
               status: 'available', 
               timeLeft: 0, 
+              finishTimestamp: undefined,
               mode: null, 
               userStudentId: null, 
               userPhone: null, 
@@ -1315,12 +1348,19 @@ const KYWashSystem = () => {
     }
 
     // Reset machine state - fully clear all machine data
+    const machineKey = `${machineType}-${machineId}`;
+    transitionHandledRef.current.delete(machineKey);
+    notifiedMachinesRef.current.delete(machineKey);
+    reminderSentRef.current.delete(machineKey);
+    stopContinuousNotificationRing();
+
     setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
       machine.id === machineId && machine.type === machineType
         ? { 
             ...machine, 
             status: 'available', 
             timeLeft: 0, 
+            finishTimestamp: undefined,
             mode: null, 
             userStudentId: null, 
             userPhone: null, 
@@ -1331,7 +1371,6 @@ const KYWashSystem = () => {
         : machine
     ));
 
-    const machineKey = `${machineType}-${machineId}`;
     setMachineCollectionStatus((prev) => {
       const updated = new Map(prev);
       updated.delete(machineKey);

@@ -33,6 +33,19 @@ describe('serverTimers', () => {
     expect(clientState.machines[0].finishTimestamp).toBe(now + 30 * 1000);
   });
 
+  it('preserves an explicit finishTimestamp so the countdown reaches zero without drifting', () => {
+    const now = 3_000_000_000_000;
+    const state: any = {
+      machines: [
+        { id: 99, type: 'washer', status: 'running', finishTimestamp: now + 5_000, timeLeft: 5 }
+      ]
+    };
+
+    const clientState = computeStateForClient(state, now);
+    expect(clientState.machines[0].finishTimestamp).toBe(now + 5_000);
+    expect(clientState.machines[0].finishTimestamp! - now).toBe(5_000);
+  });
+
   it('tickServerTimers decrements and transitions to pending-collection', () => {
     const now = Date.now();
     const state: any = {
