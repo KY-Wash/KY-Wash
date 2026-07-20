@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Waves, Loader2, Clock, Users, AlertCircle, LogOut, Settings, ChevronDown, ChevronUp, Lock, Unlock, History, TrendingUp, X, Edit2, BarChart3, Trash2 } from 'lucide-react';
 import Image from 'next/image';
 import { insertUsageRecord, updateUsageRecordStatus, supabase } from '@/lib/supabase';
+import { buildMachineCollectionKey, getCollectionActionState } from '@/lib/machineCollectionFlow';
 
 interface User {
   studentId: string;
@@ -3479,46 +3480,54 @@ const KYWashSystem = () => {
                               ✅ Cycle complete — awaiting collection
                             </p>
                             <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Previous user: {machine.userStudentId}</p>
-                            <div className="flex gap-2">
-                              {user?.studentId === machine.userStudentId ? (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleMachineCollectionStatus(machine.id, machine.type, 'collected');
-                                  }}
-                                  className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                    darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
-                                  }`}
-                                >
-                                  I collected my clothes
-                                </button>
-                              ) : (
-                                <>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleMachineCollectionStatus(machine.id, machine.type, 'coming');
-                                    }}
-                                    className={`px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                      darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
-                                    }`}
-                                  >
-                                    I'm collecting
-                                  </button>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleMachineCollectionStatus(machine.id, machine.type, 'collected');
-                                    }}
-                                    className={`px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                      darkMode ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-gray-200 hover:bg-gray-300 text-gray-800'
-                                    }`}
-                                  >
-                                    Report collected
-                                  </button>
-                                </>
-                              )}
-                            </div>
+                            {(() => {
+                              const collectionState = getCollectionActionState(
+                                machine,
+                                user?.studentId,
+                                machineCollectionStatus.get(buildMachineCollectionKey(machine.type, machine.id)) || null
+                              );
+
+                              return (
+                                <div className="space-y-2">
+                                  {collectionState.showPendingNotice && (
+                                    <p className={`text-sm ${darkMode ? 'text-yellow-300' : 'text-yellow-700'}`}>
+                                      {collectionState.pendingNotice}
+                                    </p>
+                                  )}
+                                  {collectionState.showOnTheWay && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleMachineCollectionStatus(machine.id, machine.type, 'coming');
+                                      }}
+                                      className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                        darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
+                                      }`}
+                                    >
+                                      On the Way
+                                    </button>
+                                  )}
+                                  {collectionState.showClothesCollected && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleMachineCollectionStatus(machine.id, machine.type, 'collected');
+                                      }}
+                                      className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                        darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
+                                      }`}
+                                    >
+                                      Clothes Collected
+                                    </button>
+                                  )}
+                                  {!collectionState.showOnTheWay && !collectionState.showClothesCollected && (
+                                    <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                      Pending collection — other users can see this machine is ready for pickup.
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </>
                         )}
 
@@ -3633,46 +3642,54 @@ const KYWashSystem = () => {
                               ✅ Cycle complete — awaiting collection
                             </p>
                             <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Previous user: {machine.userStudentId}</p>
-                            <div className="flex gap-2">
-                              {user?.studentId === machine.userStudentId ? (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleMachineCollectionStatus(machine.id, machine.type, 'collected');
-                                  }}
-                                  className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                    darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
-                                  }`}
-                                >
-                                  I collected my clothes
-                                </button>
-                              ) : (
-                                <>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleMachineCollectionStatus(machine.id, machine.type, 'coming');
-                                    }}
-                                    className={`px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                      darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
-                                    }`}
-                                  >
-                                    I'm collecting
-                                  </button>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleMachineCollectionStatus(machine.id, machine.type, 'collected');
-                                    }}
-                                    className={`px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                      darkMode ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-gray-200 hover:bg-gray-300 text-gray-800'
-                                    }`}
-                                  >
-                                    Report collected
-                                  </button>
-                                </>
-                              )}
-                            </div>
+                            {(() => {
+                              const collectionState = getCollectionActionState(
+                                machine,
+                                user?.studentId,
+                                machineCollectionStatus.get(buildMachineCollectionKey(machine.type, machine.id)) || null
+                              );
+
+                              return (
+                                <div className="space-y-2">
+                                  {collectionState.showPendingNotice && (
+                                    <p className={`text-sm ${darkMode ? 'text-yellow-300' : 'text-yellow-700'}`}>
+                                      {collectionState.pendingNotice}
+                                    </p>
+                                  )}
+                                  {collectionState.showOnTheWay && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleMachineCollectionStatus(machine.id, machine.type, 'coming');
+                                      }}
+                                      className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                        darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
+                                      }`}
+                                    >
+                                      On the Way
+                                    </button>
+                                  )}
+                                  {collectionState.showClothesCollected && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleMachineCollectionStatus(machine.id, machine.type, 'collected');
+                                      }}
+                                      className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
+                                        darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
+                                      }`}
+                                    >
+                                      Clothes Collected
+                                    </button>
+                                  )}
+                                  {!collectionState.showOnTheWay && !collectionState.showClothesCollected && (
+                                    <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                      Pending collection — other users can see this machine is ready for pickup.
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </>
                         )}
 
