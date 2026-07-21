@@ -3482,7 +3482,7 @@ const KYWashSystem = () => {
                             <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Previous user: {machine.userStudentId}</p>
                             {(() => {
                               const collectionState = getCollectionActionState(
-                                machine,
+                                machine as any,
                                 user?.studentId,
                                 machineCollectionStatus.get(buildMachineCollectionKey(machine.type, machine.id)) || null
                               );
@@ -3644,7 +3644,7 @@ const KYWashSystem = () => {
                             <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Previous user: {machine.userStudentId}</p>
                             {(() => {
                               const collectionState = getCollectionActionState(
-                                machine,
+                                machine as any,
                                 user?.studentId,
                                 machineCollectionStatus.get(buildMachineCollectionKey(machine.type, machine.id)) || null
                               );
