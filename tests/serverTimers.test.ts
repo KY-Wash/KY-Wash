@@ -37,7 +37,7 @@ describe('serverTimers', () => {
     const now = 3_000_000_000_000;
     const state: any = {
       machines: [
-        { id: 99, type: 'washer', status: 'running', finishTimestamp: now + 5_000, timeLeft: 5 }
+        { id: 99, type: 'washer', status: 'running', finishTimestamp: now + 5_000, timeLeft: 30 }
       ]
     };
 
@@ -62,6 +62,24 @@ describe('serverTimers', () => {
     machineStartTimes.set(key, now - 70 * 1000);
 
     const changed = tickServerTimers(state, now);
+    expect(changed).toBe(true);
+    expect(state.machines[0].status).toBe('pending-collection');
+    expect(state.machines[0].timeLeft).toBe(0);
+    expect(state.usageHistory[0].status).toBe('Completed');
+  });
+
+  it('tickServerTimers uses finishTimestamp when the start map is empty', () => {
+    const now = Date.now();
+    const state: any = {
+      machines: [
+        { id: 7, type: 'dryer', status: 'running', finishTimestamp: now + 1_500, timeLeft: 99, userStudentId: 'y' }
+      ],
+      usageHistory: [
+        { id: 'h7', studentId: 'y', machineType: 'dryer', machineId: 7, status: 'In Progress' }
+      ]
+    };
+
+    const changed = tickServerTimers(state, now + 2_000);
     expect(changed).toBe(true);
     expect(state.machines[0].status).toBe('pending-collection');
     expect(state.machines[0].timeLeft).toBe(0);

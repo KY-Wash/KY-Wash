@@ -12,8 +12,187 @@ import { machineStartTimes, tickServerTimers, recoverStartTimes, computeStateFor
 
 // Global server timer that runs continuously
 let globalServerTimer: NodeJS.Timeout | null = null;
-// Flag to ensure state is loaded only once
-let stateLoaded = false;
+// Promise guard so the state seed only runs once and callers can await it.
+let stateInitPromise: Promise<void> | null = null;
+let stateInitialized = false;
+
+function mapUsageHistoryRows(rows: any[]): any[] {
+  return rows.map((record) => ({
+    id: record.id,
+    type: record.type || record.machineType,
+    machineType: record.type || record.machineType,
+    machine_id: parseInt(record.machine_id || record.machineId),
+    machineId: parseInt(record.machine_id || record.machineId),
+    mode: record.mode,
+    duration: record.duration,
+    date: record.date,
+    day: record.day || '',
+    time: record.time || '',
+    studentId: record.studentId || record.student_id || '',
+    timestamp: record.timestamp,
+    spending: record.spending || 0,
+    status: record.status || 'completed',
+  }));
+}
+
+async function seedStateFromSupabase() {
+  const svc = getServiceSupabaseClient();
+  if (!svc) {
+    return;
+  }
+
+  const [chatResult, feedbackResult, foundersResult, auditResult, waitlistResult, machinesResult, usageResult] = await Promise.all([
+    svc.from('community_chat').select('*').order('created_at', { ascending: true }).limit(100),
+    svc.from('feedback_issues').select('*').order('created_at', { ascending: true }).limit(200),
+    svc.from('founders').select('*').order('created_at', { ascending: true }).limit(200),
+    svc.from('audit_logs').select('*').order('created_at', { ascending: true }).limit(500),
+    svc.from('waitlist_entries').select('student_id,phone,machine_type,created_at').order('created_at', { ascending: true }),
+    svc.from('machines').select('id,type,status,time_left,mode,locked,original_duration,finish_timestamp,updated_at').order('updated_at', { ascending: true }),
+    svc.from('usage_history').select('id,student_id,type,machine_id,mode,duration,spending,status,date,timestamp,created_at').order('timestamp', { ascending: true }),
+  ]);
+
+  const state = getAppState();
+
+  if (!chatResult.error && chatResult.data && chatResult.data.length > 0) {
+    state.communityChat = (chatResult.data as any[]).map(c => {
+      const d = new Date(c.created_at);
+      return {
+        id: c.id,
+        studentId: c.student_id || '',
+        message: c.message,
+        timestamp: d.getTime(),
+        date: d.toLocaleDateString('en-GB', { timeZone: 'Asia/Kuala_Lumpur' }),
+        time: d.toLocaleTimeString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      };
+    });
+  }
+
+  if (!feedbackResult.error && feedbackResult.data && feedbackResult.data.length > 0) {
+    state.feedback = (feedbackResult.data as any[]).map(f => ({
+      id: f.id,
+      studentId: f.student_id || '',
+      studentName: f.student_name || f.student_id || '',
+      message: f.message,
+      timestamp: new Date(f.created_at).getTime(),
+      date: new Date(f.created_at).toLocaleDateString(),
+      isDone: f.status === 'closed',
+      reportCount: f.report_count || 0,
+      warnings: f.warnings || 0,
+      rating: f.rating || undefined,
+    }));
+  }
+
+  if (!foundersResult.error && foundersResult.data && foundersResult.data.length > 0) {
+    state.founders = (foundersResult.data as any[]).map(f => ({
+      id: f.id,
+      name: f.name,
+      scholarship: f.scholarship,
+      course: f.course,
+      profileImage: f.profile_image || '',
+    }));
+  }
+
+  if (!auditResult.error && auditResult.data && auditResult.data.length > 0) {
+    state.auditLog = (auditResult.data as any[]).map(a => ({
+      id: a.id,
+      action: a.action,
+      machineType: a.machine_type,
+      machineId: a.machine_id,
+      initiatedBy: a.initiated_by,
+      reason: a.reason || null,
+      timestamp: a.timestamp || Date.now(),
+      date: new Date(a.created_at).toLocaleDateString(),
+      time: new Date(a.created_at).toLocaleTimeString(),
+    }));
+  }
+
+  if (!waitlistResult.error && waitlistResult.data && waitlistResult.data.length > 0) {
+    const deduped = dedupeWaitlistEntries(waitlistResult.data as any[]);
+    state.waitlists = { washers: deduped.washers, dryers: deduped.dryers };
+  }
+
+  if (!usageResult.error && usageResult.data && usageResult.data.length > 0) {
+    state.usageHistory = mapUsageHistoryRows(usageResult.data as any[]) as any;
+  }
+
+  if (!machinesResult.error && machinesResult.data && machinesResult.data.length > 0) {
+    const now = Date.now();
+    const usageByMachine = new Map<string, any>();
+    for (const record of state.usageHistory as any[]) {
+      if (record.status === 'In Progress') {
+        usageByMachine.set(`${record.machineType || record.type}-${record.machineId || record.machine_id}`, record);
+      }
+    }
+
+    const machinesByKey = new Map<string, any>((state.machines || []).map((machine: any) => [`${machine.type}-${machine.id}`, machine]));
+
+    state.machines = (machinesResult.data as any[]).map((row) => {
+      const key = `${row.type}-${row.id}`;
+      const existing = machinesByKey.get(key) || {
+        id: String(row.id),
+        type: row.type,
+        status: 'available',
+        timeLeft: 0,
+        mode: '',
+        locked: false,
+        userStudentId: '',
+        userPhone: '',
+      };
+
+      const finishTimestamp = typeof row.finish_timestamp === 'number' ? row.finish_timestamp : undefined;
+      const runningRecord = usageByMachine.get(key);
+      let status = row.status || existing.status;
+      let timeLeft = typeof row.time_left === 'number' ? row.time_left : existing.timeLeft || 0;
+
+      if (status === 'running' && finishTimestamp !== undefined) {
+        timeLeft = Math.max(0, Math.ceil((finishTimestamp - now) / 1000));
+        if (timeLeft === 0) {
+          status = 'pending-collection';
+        }
+      }
+
+      return {
+        id: String(row.id),
+        type: row.type,
+        status,
+        timeLeft: status === 'running' ? timeLeft : 0,
+        mode: row.mode || null,
+        locked: !!row.locked,
+        userStudentId: runningRecord?.studentId || existing.userStudentId || null,
+        userPhone: existing.userPhone || null,
+        originalDuration: row.original_duration || undefined,
+        finishTimestamp: status === 'running' && typeof row.finish_timestamp === 'number' ? row.finish_timestamp : undefined,
+      };
+    });
+  }
+
+  updateAppState(state);
+}
+
+async function ensureStateInitialized() {
+  if (stateInitialized) {
+    return;
+  }
+
+  if (!stateInitPromise) {
+    stateInitPromise = (async () => {
+      loadPersistedState();
+      await seedStateFromSupabase();
+      try {
+        recoverStartTimes(getAppState());
+      } catch (err) {
+        console.warn('Failed to restore machine start times after state seed:', err);
+      }
+      initializeGlobalTimer();
+      stateInitialized = true;
+    })().catch((err) => {
+      console.error('Failed to initialize server state:', err);
+      stateInitialized = true;
+    });
+  }
+
+  await stateInitPromise;
+}
 
 function initializeGlobalTimer() {
   if (globalServerTimer) {
@@ -183,109 +362,8 @@ async function updateSupabaseRecordStatus(studentId: string, machineType: string
   }
 }
 
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
-  // Load persisted state on first request
-  if (!stateLoaded) {
-    loadPersistedState();
-    stateLoaded = true;
-
-    // Try to fetch persisted chat & feedback from Supabase to seed server state
-    (async () => {
-      try {
-        const svc = getServiceSupabaseClient();
-        if (!svc) return;
-
-        const { data: chatData, error: chatErr } = await svc.from('community_chat').select('*').order('created_at', { ascending: true }).limit(100);
-        if (!chatErr && chatData) {
-          const state = getAppState();
-          state.communityChat = (chatData as any[]).map(c => {
-            const d = new Date(c.created_at);
-            return {
-              id: c.id,
-              studentId: c.student_id || '',
-              message: c.message,
-              timestamp: d.getTime(),
-              date: d.toLocaleDateString('en-GB', { timeZone: 'Asia/Kuala_Lumpur' }),
-              time: d.toLocaleTimeString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-            };
-          });
-        }
-
-        const { data: fbData, error: fbErr } = await svc.from('feedback_issues').select('*').order('created_at', { ascending: true }).limit(200);
-        if (!fbErr && fbData) {
-          const state = getAppState();
-          state.feedback = (fbData as any[]).map(f => ({
-            id: f.id,
-            studentId: f.student_id || '',
-            studentName: f.student_name || f.student_id || '',
-            message: f.message,
-            timestamp: new Date(f.created_at).getTime(),
-            date: new Date(f.created_at).toLocaleDateString(),
-            isDone: f.status === 'closed',
-            reportCount: f.report_count || 0,
-            warnings: f.warnings || 0,
-            rating: f.rating || undefined,
-          }));
-        }
-
-        // Seed founders table to state
-        const { data: foundersData, error: foundersErr } = await svc.from('founders').select('*').order('created_at', { ascending: true }).limit(200);
-        if (!foundersErr && foundersData) {
-          const state = getAppState();
-          state.founders = (foundersData as any[]).map(f => ({
-            id: f.id,
-            name: f.name,
-            scholarship: f.scholarship,
-            course: f.course,
-            profileImage: f.profile_image || '',
-          }));
-        }
-
-        // Seed audit logs
-        const { data: auditData, error: auditErr } = await svc.from('audit_logs').select('*').order('created_at', { ascending: true }).limit(500);
-        if (!auditErr && auditData) {
-          const state = getAppState();
-          state.auditLog = (auditData as any[]).map(a => ({
-            id: a.id,
-            action: a.action,
-            machineType: a.machine_type,
-            machineId: a.machine_id,
-            initiatedBy: a.initiated_by,
-            reason: a.reason || null,
-            timestamp: a.timestamp || Date.now(),
-            date: new Date(a.created_at).toLocaleDateString(),
-            time: new Date(a.created_at).toLocaleTimeString(),
-          }));
-        }
-
-        // Seed waitlists from DB (so we don't lose entries across restarts)
-        try {
-          const { data: wlData, error: wlErr } = await svc.from('waitlist_entries').select('student_id,phone,machine_type,created_at').order('created_at', { ascending: true });
-          if (!wlErr && wlData) {
-            const state = getAppState();
-            // Deduplicate rows and keep latest entry per student+machine
-            const deduped = dedupeWaitlistEntries(wlData as any[]);
-            state.waitlists = { washers: deduped.washers, dryers: deduped.dryers };
-          }
-        } catch (err) {
-          console.warn('Failed to seed waitlist entries from Supabase:', err);
-        }
-
-        // Persist back to state file
-        updateAppState(getAppState());
-
-        // Restore server-side start times for running machines so the global timer can continue
-        try {
-          recoverStartTimes(getAppState());
-          initializeGlobalTimer();
-        } catch (err) {
-          console.warn('Failed to restore machine start times after seeding state:', err);
-        }
-      } catch (err) {
-        console.error('Failed to seed state from Supabase:', err);
-      }
-    })();
-  }
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  await ensureStateInitialized();
 
   // Enable CORS
   res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -301,6 +379,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const state = getAppState();
 
     if (req.method === 'GET') {
+      const changed = tickServerTimers(state, Date.now());
+      if (changed) {
+        updateAppState(state);
+      }
       // GET - Return current state (include computed finishTimestamp for running machines)
       const stateForClient = computeStateForClient(state);
       res.status(200).json(stateForClient);
@@ -324,6 +406,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             machine.mode = data.mode;
             machine.timeLeft = durationInSeconds;
             machine.originalDuration = data.duration; // Store original duration for accurate timer
+            machine.finishTimestamp = now.getTime() + durationInSeconds * 1000;
             machine.userStudentId = data.studentId;
             machine.userPhone = data.phoneNumber;
             machine.startedAt = now.getTime();
@@ -380,6 +463,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
                       locked: false,
                       user_id: userUuid,
                       original_duration: data.duration,
+                      finish_timestamp: machine.finishTimestamp,
                     }
                   ], { onConflict: 'type,id' });
                 }
@@ -432,6 +516,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             machine.mode = '';
             machine.userStudentId = '';
             machine.userPhone = '';
+            machine.finishTimestamp = undefined;
+            machine.startedAt = undefined;
 
             void syncMachineSessionToNeon({
               machineType: data.machineType,
@@ -449,7 +535,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
               try {
                 const svc = getServiceSupabaseClient();
                 if (svc) {
-                  await svc.from('machines').update({ status: 'available', time_left: 0, user_id: null, mode: null }).match({ type: data.machineType, id: data.machineId });
+                  await svc.from('machines').update({ status: 'available', time_left: 0, user_id: null, mode: null, finish_timestamp: null, original_duration: null }).match({ type: data.machineType, id: data.machineId });
                 }
               } catch (err) {
                 console.error('Failed to persist machine cancellation to Supabase:', err);
@@ -649,7 +735,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           if (machine && machine.status === 'running') {
             machine.status = 'pending-collection';
             machine.timeLeft = 0;
-            machine.finishTimestamp = Date.now();
+            machine.finishTimestamp = machine.finishTimestamp || Date.now();
             stopServerTimer(String(data.machineId), data.machineType);
 
             const historyRecord = state.usageHistory.find((h: any) =>
@@ -680,7 +766,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
               try {
                 const svc = getServiceSupabaseClient();
                 if (svc) {
-                  await svc.from('machines').update({ status: 'pending-collection', time_left: 0 }).match({ type: data.machineType, id: data.machineId });
+                  await svc.from('machines').update({ status: 'pending-collection', time_left: 0, finish_timestamp: machine.finishTimestamp }).match({ type: data.machineType, id: data.machineId });
                   await svc.from('audit_logs').insert([{ action: 'machine-complete', machine_type: data.machineType, machine_id: data.machineId, timestamp: Date.now() }]);
                 }
               } catch (err) {
@@ -717,7 +803,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
                 const svc = getServiceSupabaseClient();
                 if (svc) {
-                  await svc.from('machines').update({ status: 'available', time_left: 0, user_id: null, mode: null }).match({ type: data.machineType, id: data.machineId });
+                  await svc.from('machines').update({ status: 'available', time_left: 0, user_id: null, mode: null, finish_timestamp: null, original_duration: null }).match({ type: data.machineType, id: data.machineId });
                   await svc.from('machine_collections').insert([{ machine_type: data.machineType, machine_id: data.machineId, status: 'collected' }]);
                   await svc.from('audit_logs').insert([{ action: 'clothes-collected', machine_type: data.machineType, machine_id: data.machineId, initiated_by: data.studentId, timestamp: Date.now() }]);
                 }
@@ -739,6 +825,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             // Stop any running timer if admin changes status
             if (data.status !== 'running') {
               stopServerTimer(data.machineId, data.machineType);
+              machine.timeLeft = 0;
+              machine.finishTimestamp = undefined;
+              machine.startedAt = undefined;
             }
 
             // Persist admin change to machines table
@@ -746,7 +835,12 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
               try {
                 const svc = getServiceSupabaseClient();
                 if (svc) {
-                  await svc.from('machines').update({ status: data.status, locked: data.status === 'maintenance' }).match({ type: data.machineType, id: data.machineId });
+                  await svc.from('machines').update({
+                    status: data.status,
+                    locked: data.status === 'maintenance',
+                    finish_timestamp: data.status === 'running' ? undefined : null,
+                    original_duration: data.status === 'running' ? undefined : null,
+                  }).match({ type: data.machineType, id: data.machineId });
                 }
               } catch (err) {
                 console.error('Failed to persist admin machine update to Supabase:', err);
@@ -948,6 +1042,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
               machine.userStudentId = '';
               machine.userPhone = '';
               machine.finishTimestamp = undefined;
+              machine.startedAt = undefined;
             }
 
             delete state.machineCollectionStatus[key];
@@ -963,7 +1058,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
                     updateSupabaseRecordStatus(historyRecord.studentId, machineType, machineId, 'Completed');
                   }
 
-                  await svc.from('machines').update({ status: 'available', time_left: 0, user_id: null, mode: null }).match({ type: machineType, id: machineId });
+                  await svc.from('machines').update({ status: 'available', time_left: 0, user_id: null, mode: null, finish_timestamp: null, original_duration: null }).match({ type: machineType, id: machineId });
                 }
               } catch (err) {
                 console.error('Failed to persist machine collection (collected) to Supabase:', err);
@@ -1075,6 +1170,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         }
       }
 
+      tickServerTimers(state, Date.now());
       updateAppState(state);
       // Include computed finish timestamps in the returned state so clients can stay synchronized
       const stateForClient = computeStateForClient(state);

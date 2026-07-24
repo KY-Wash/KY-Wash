@@ -19,8 +19,12 @@ export function recoverStartTimes(state: any, now = Date.now()) {
   state.machines.forEach((machine: any) => {
     if (machine.status === 'running' && typeof machine.timeLeft === 'number' && machine.timeLeft > 0) {
       const key = `${machine.type}-${machine.id}`;
-      // If both originalDuration and timeLeft present, reconstruct a start time
-      if (typeof machine.originalDuration === 'number') {
+      // Prefer a persisted finish timestamp when available, otherwise reconstruct from duration/time left.
+      if (typeof machine.finishTimestamp === 'number' && typeof machine.originalDuration === 'number') {
+        const totalMs = machine.originalDuration * 60 * 1000;
+        const startTime = machine.finishTimestamp - totalMs;
+        machineStartTimes.set(key, startTime);
+      } else if (typeof machine.originalDuration === 'number') {
         const totalMs = machine.originalDuration * 60 * 1000;
         const elapsedMs = Math.max(0, totalMs - machine.timeLeft * 1000);
         const startTime = now - elapsedMs;
@@ -37,11 +41,14 @@ export function computeStateForClient(state: any, now = Date.now()) {
   const machines = (state.machines || []).map((m: any) => {
     let finishTimestamp: number | undefined;
     if (m.status === 'running') {
+      if (typeof m.finishTimestamp === 'number') {
+        finishTimestamp = m.finishTimestamp;
+      }
       const key = `${m.type}-${m.id}`;
       const startTime = machineStartTimes.get(key);
-      if (startTime !== undefined && typeof m.originalDuration === 'number') {
+      if (finishTimestamp === undefined && startTime !== undefined && typeof m.originalDuration === 'number') {
         finishTimestamp = startTime + m.originalDuration * 60 * 1000;
-      } else if (typeof m.timeLeft === 'number' && m.timeLeft > 0) {
+      } else if (finishTimestamp === undefined && typeof m.timeLeft === 'number' && m.timeLeft > 0) {
         finishTimestamp = now + m.timeLeft * 1000;
       }
     }
@@ -59,11 +66,18 @@ export function tickServerTimers(state: any, now = Date.now()): boolean {
 
     if (machine.status === 'running') {
       const startTime = machineStartTimes.get(key);
-      if (startTime !== undefined) {
-        // Determine total duration seconds
-        const totalDurationSeconds = machine.originalDuration ? machine.originalDuration * 60 : machine.timeLeft;
-        const elapsedSeconds = Math.floor((now - startTime) / 1000);
-        const newTimeLeft = Math.max(0, totalDurationSeconds - elapsedSeconds);
+      let finishTimestamp = typeof machine.finishTimestamp === 'number' ? machine.finishTimestamp : undefined;
+
+      if (finishTimestamp === undefined && startTime !== undefined && typeof machine.originalDuration === 'number') {
+        finishTimestamp = startTime + machine.originalDuration * 60 * 1000;
+      }
+
+      if (finishTimestamp === undefined && typeof machine.timeLeft === 'number' && machine.timeLeft > 0) {
+        finishTimestamp = now + machine.timeLeft * 1000;
+      }
+
+      if (finishTimestamp !== undefined) {
+        const newTimeLeft = Math.max(0, Math.ceil((finishTimestamp - now) / 1000));
 
         if (newTimeLeft !== machine.timeLeft) {
           machine.timeLeft = newTimeLeft;
