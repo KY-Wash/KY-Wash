@@ -111,6 +111,32 @@ interface ChatMessage {
   time: string;
 }
 
+const MACHINE_TIMER_STORAGE_KEY = 'kyWashMachineTimers';
+
+function getMachineTimerKey(machineType: 'washer' | 'dryer', machineId: number): string {
+  return `${machineType}-${machineId}`;
+}
+
+function loadPersistedMachineTimers(): Record<string, number> {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+
+  const savedTimers = window.localStorage.getItem(MACHINE_TIMER_STORAGE_KEY);
+  if (!savedTimers) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(savedTimers) as Record<string, number>;
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, finishTimestamp]) => typeof finishTimestamp === 'number')
+    );
+  } catch {
+    return {};
+  }
+}
+
 const KYWashSystem = () => {
   const [user, setUser] = useState<User | null>(null);
   const [currentView, setCurrentView] = useState<'main' | 'admin' | 'history' | 'stats' | 'dryer-stats' | 'feedback' | 'user-guide'>('main');
@@ -187,6 +213,7 @@ const KYWashSystem = () => {
   const [chatMessage, setChatMessage] = useState<string>('');
   const [showCommunityChat, setShowCommunityChat] = useState<boolean>(false);
   const [lastSeenChatTimestamp, setLastSeenChatTimestamp] = useState<number>(0);
+  const [timerStateReady, setTimerStateReady] = useState<boolean>(false);
 
   // Initialize last-seen timestamp to now on first load to avoid marking all existing messages as unread
   useEffect(() => {
@@ -472,6 +499,58 @@ const KYWashSystem = () => {
       }
     };
   }, []);
+
+  // Restore active timers immediately after hydration so a refresh does not reset the UI countdown.
+  // The server API remains the shared source of truth for all users.
+  useEffect(() => {
+    const persistedTimers = loadPersistedMachineTimers();
+
+    if (Object.keys(persistedTimers).length > 0) {
+      const now = Date.now();
+
+      setMachines((prevMachines) =>
+        prevMachines.map((machine) => {
+          const machineKey = getMachineTimerKey(machine.type, machine.id);
+          const finishTimestamp = persistedTimers[machineKey];
+
+          if (typeof finishTimestamp !== 'number' || finishTimestamp <= now) {
+            return machine;
+          }
+
+          return {
+            ...machine,
+            status: 'running',
+            timeLeft: Math.max(0, Math.ceil((finishTimestamp - now) / 1000)),
+            finishTimestamp,
+          };
+        })
+      );
+    }
+
+    setTimerStateReady(true);
+  }, []);
+
+  // Persist active finish timestamps so refreshes can restore the live countdown immediately.
+  useEffect(() => {
+    if (!timerStateReady || typeof window === 'undefined') {
+      return;
+    }
+
+    const persistedTimers: Record<string, number> = {};
+
+    machines.forEach((machine) => {
+      if (machine.status === 'running' && typeof machine.finishTimestamp === 'number') {
+        persistedTimers[getMachineTimerKey(machine.type, machine.id)] = machine.finishTimestamp;
+      }
+    });
+
+    if (Object.keys(persistedTimers).length === 0) {
+      window.localStorage.removeItem(MACHINE_TIMER_STORAGE_KEY);
+      return;
+    }
+
+    window.localStorage.setItem(MACHINE_TIMER_STORAGE_KEY, JSON.stringify(persistedTimers));
+  }, [machines, timerStateReady]);
 
   // Replace per-machine decrement with a single tick that computes remaining time from finishTimestamp.
   // This avoids drift, prevents polling from stomping local timers, and centralizes completion handling.
