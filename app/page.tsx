@@ -220,6 +220,7 @@ const KYWashSystem = () => {
   // Real-time sync with polling
   const socketRef = useRef<{ emit: (event: string, data: any) => Promise<void> } | null>(null);
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
+  const [stateHydrated, setStateHydrated] = useState<boolean>(false);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const machineTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -457,7 +458,9 @@ const KYWashSystem = () => {
     };
 
     // Fetch initial state
-    fetchState();
+    void fetchState().finally(() => {
+      setStateHydrated(true);
+    });
 
     // Poll every 2000ms (2 seconds) for near real-time visibility of machine state changes
     // This ensures all users see start/cancel operations, machine changes, and waiting list updates quickly
@@ -1120,6 +1123,10 @@ const KYWashSystem = () => {
 
   const startMachine = (machineId: number, machineType: 'washer' | 'dryer', mode: Mode): void => {
     if (!user) return;
+    if (!stateHydrated) {
+      showNotification('Loading live machine state. Please wait a moment and try again.');
+      return;
+    }
 
     const targetMachine = machines.find((m) => m.id === machineId && m.type === machineType);
     if (!targetMachine) return;

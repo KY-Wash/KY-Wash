@@ -6,7 +6,7 @@ import { appendWasherCycle, purgeOldWasherCycles } from '@/lib/washerCycleAnalyt
 import { syncMachineSessionToNeon } from '@/lib/neon';
 
 // Timer utilities are provided in a testable module
-import { machineStartTimes, tickServerTimers, recoverStartTimes, computeStateForClient, startServerTimer as startServerTimerUtil, stopServerTimer as stopServerTimerUtil } from '@/lib/serverTimers';
+import { machineStartTimes, tickServerTimers, recoverStartTimes, computeStateForClient, rehydrateActiveCycles, startServerTimer as startServerTimerUtil, stopServerTimer as stopServerTimerUtil } from '@/lib/serverTimers';
 
 // Note: computeStateForClient is imported from the module and used when returning state to clients.
 
@@ -34,6 +34,38 @@ function mapUsageHistoryRows(rows: any[]): any[] {
     status: record.status || 'completed',
   }));
 }
+
+async function syncMachinesToSupabase(state: any) {
+  const svc = getServiceSupabaseClient();
+  if (!svc) {
+    return;
+  }
+
+  const machines = Array.isArray(state?.machines) ? state.machines : [];
+
+  await Promise.all(
+    machines.map(async (machine: any) => {
+      try {
+        await svc.from('machines').upsert([
+          {
+            id: Number(machine.id),
+            type: machine.type,
+            status: machine.status,
+            time_left: machine.status === 'running' ? Math.max(0, Math.ceil(Number(machine.timeLeft) || 0)) : 0,
+            mode: machine.mode || null,
+            locked: !!machine.locked,
+            original_duration: machine.originalDuration ?? null,
+            finish_timestamp: machine.finishTimestamp ?? null,
+            updated_at: new Date().toISOString(),
+          },
+        ], { onConflict: 'type,id' });
+      } catch (err) {
+        console.error('Failed to sync machine state to Supabase:', err);
+      }
+    })
+  );
+}
+
 
 async function seedStateFromSupabase() {
   const svc = getServiceSupabaseClient();
@@ -162,6 +194,7 @@ async function seedStateFromSupabase() {
         userPhone: existing.userPhone || null,
         originalDuration: row.original_duration || undefined,
         finishTimestamp: status === 'running' && typeof row.finish_timestamp === 'number' ? row.finish_timestamp : undefined,
+        startedAt: runningRecord?.timestamp || undefined,
       };
     });
   }
@@ -217,6 +250,7 @@ function initializeGlobalTimer() {
       });
 
       updateAppState(state);
+      void syncMachinesToSupabase(state);
     }
   }, 1000);
 
@@ -378,10 +412,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const state = getAppState();
 
+    if (rehydrateActiveCycles(state, Date.now())) {
+      updateAppState(state);
+      void syncMachinesToSupabase(state);
+    }
+
     if (req.method === 'GET') {
       const changed = tickServerTimers(state, Date.now());
       if (changed) {
         updateAppState(state);
+        void syncMachinesToSupabase(state);
       }
       // GET - Return current state (include computed finishTimestamp for running machines)
       const stateForClient = computeStateForClient(state);
@@ -389,6 +429,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     } else if (req.method === 'POST') {
       // POST - Handle events (machine start, waitlist join, etc)
       const { event, data } = req.body;
+
+      if (rehydrateActiveCycles(state, Date.now())) {
+        updateAppState(state);
+        void syncMachinesToSupabase(state);
+      }
 
       if (!event) {
         return res.status(400).json({ error: 'Missing event type' });
@@ -1172,6 +1217,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       tickServerTimers(state, Date.now());
       updateAppState(state);
+      void syncMachinesToSupabase(state);
       // Include computed finish timestamps in the returned state so clients can stay synchronized
       const stateForClient = computeStateForClient(state);
       res.status(200).json({ success: true, state: stateForClient });

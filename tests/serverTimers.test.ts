@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { machineStartTimes, tickServerTimers, recoverStartTimes, computeStateForClient, startServerTimer, stopServerTimer } from '../lib/serverTimers';
+import { machineStartTimes, tickServerTimers, recoverStartTimes, computeStateForClient, rehydrateActiveCycles, startServerTimer, stopServerTimer } from '../lib/serverTimers';
 
 describe('serverTimers', () => {
   beforeEach(() => {
@@ -104,6 +104,35 @@ describe('serverTimers', () => {
     const elapsedMs = Math.max(0, totalMs - 300 * 1000);
     expect(start).toBeGreaterThanOrEqual(now - elapsedMs - 5); // allow small delta
     expect(start).toBeLessThanOrEqual(now - elapsedMs + 5);
+  });
+
+  it('rehydrateActiveCycles restores a cycle from usage history even if the machine looks available', () => {
+    const now = 4_000_000_000_000;
+    const state: any = {
+      machines: [
+        { id: 6, type: 'washer', status: 'available', timeLeft: 0, mode: '', userStudentId: '', userPhone: '' }
+      ],
+      usageHistory: [
+        {
+          id: 'h6',
+          studentId: 'S6',
+          machineType: 'washer',
+          machineId: 6,
+          duration: 30,
+          mode: 'Normal',
+          timestamp: now - 10 * 60 * 1000,
+          status: 'In Progress'
+        }
+      ]
+    };
+
+    const changed = rehydrateActiveCycles(state, now);
+
+    expect(changed).toBe(true);
+    expect(state.machines[0].status).toBe('running');
+    expect(state.machines[0].timeLeft).toBeGreaterThan(0);
+    expect(state.machines[0].finishTimestamp).toBe(now + 20 * 60 * 1000);
+    expect(machineStartTimes.get('washer-6')).toBe(now - 10 * 60 * 1000);
   });
 
   it('timer ticks down each second until completion', () => {
