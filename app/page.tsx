@@ -2717,15 +2717,12 @@ const KYWashSystem = () => {
                       )}
                     </div>
                     <p className={`text-sm capitalize ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{machine.locked ? 'Locked by Admin' : machine.status}</p>
-                    {(machine.status === 'running' || machine.status === 'pending-collection') && !machine.locked && (
+                    {machine.status === 'running' && !machine.locked && (
                       <>
                         <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Mode: {machine.mode || '—'}</p>
                         <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>User: {machine.userStudentId || '—'}</p>
                         <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Phone: {machine.userPhone || '—'}</p>
                         <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Time Left: {formatTime(getTimeLeftSeconds(machine))}</p>
-                        {machine.status === 'pending-collection' && (
-                          <p className={`text-xs font-semibold mt-1 ${darkMode ? 'text-yellow-300' : 'text-yellow-700'}`}>Pending collection — please collect your clothes</p>
-                        )}
                       </>
                     )} 
                   </div>
@@ -3529,7 +3526,7 @@ const KYWashSystem = () => {
                           </div>
                         </div>
 
-                        {(machine.status === 'running' || machine.status === 'pending-collection') && (
+                        {machine.status === 'running' && (
                           <>
                             <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Mode: {machine.mode}</p>
                             <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>User: {machine.userStudentId}</p>
@@ -3691,7 +3688,7 @@ const KYWashSystem = () => {
                           </div>
                         </div>
 
-                        {(machine.status === 'running' || machine.status === 'pending-collection') && (
+                        {machine.status === 'running' && (
                           <>
                             <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Mode: {machine.mode}</p>
                             <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>User: {machine.userStudentId}</p>
