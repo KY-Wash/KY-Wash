@@ -14,15 +14,15 @@ describe('machineCollectionFlow', () => {
     expect(state.showPendingNotice).toBe(false);
   });
 
-  it('keeps collection controls available for other users when someone is on the way', () => {
+  it('shows a pending collection notice for other users when someone is on the way', () => {
     const state = getCollectionActionState({
       status: 'pending-collection',
       userStudentId: 'student-1',
       collectionStatus: { status: 'coming', user: 'student-2' },
     } as any, 'student-3');
 
-    expect(state.showOnTheWay).toBe(true);
-    expect(state.showClothesCollected).toBe(true);
+    expect(state.showOnTheWay).toBe(false);
+    expect(state.showClothesCollected).toBe(false);
     expect(state.showPendingNotice).toBe(true);
     expect(state.pendingNotice).toContain('student-2');
   });
