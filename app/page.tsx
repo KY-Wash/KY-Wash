@@ -812,7 +812,9 @@ const KYWashSystem = () => {
       }
 
       const remainingMs = machine.finishTimestamp - nowTick;
-      if (remainingMs <= 0 && !transitionHandledRef.current.has(machineKey)) {
+      // Keep the running card visible through the final visible second so the
+      // countdown reaches 00:00 before switching to collection mode.
+      if (remainingMs <= -1000 && !transitionHandledRef.current.has(machineKey)) {
         transitionHandledRef.current.add(machineKey);
 
         setMachines((prev) => prev.map((m) =>
@@ -3556,7 +3558,9 @@ const KYWashSystem = () => {
                             <p className={`text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
                               ✅ Cycle complete — awaiting collection
                             </p>
+                            <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Mode: {machine.mode}</p>
                             <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Previous user: {machine.userStudentId}</p>
+                            <p className={`text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Phone: {machine.userPhone}</p>
                             {(() => {
                               const collectionState = getCollectionActionState(
                                 machine as any,
@@ -3718,7 +3722,9 @@ const KYWashSystem = () => {
                             <p className={`text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
                               ✅ Cycle complete — awaiting collection
                             </p>
+                            <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Mode: {machine.mode}</p>
                             <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Previous user: {machine.userStudentId}</p>
+                            <p className={`text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Phone: {machine.userPhone}</p>
                             {(() => {
                               const collectionState = getCollectionActionState(
                                 machine as any,
