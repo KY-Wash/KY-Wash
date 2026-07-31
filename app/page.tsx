@@ -111,6 +111,54 @@ interface ChatMessage {
   time: string;
 }
 
+const MACHINE_TIMER_STORAGE_KEY = 'kyWashMachineTimers';
+
+interface PersistedMachineTimerSnapshot {
+  finishTimestamp: number;
+  mode?: string | null;
+  userStudentId?: string | null;
+  userPhone?: string | null;
+  originalDuration?: number;
+}
+
+function getMachineTimerKey(machineType: 'washer' | 'dryer', machineId: number): string {
+  return `${machineType}-${machineId}`;
+}
+
+function loadPersistedMachineTimers(): Record<string, PersistedMachineTimerSnapshot> {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+
+  const savedTimers = window.localStorage.getItem(MACHINE_TIMER_STORAGE_KEY);
+  if (!savedTimers) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(savedTimers) as Record<string, number | PersistedMachineTimerSnapshot>;
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter(([, timerSnapshot]) => {
+          if (typeof timerSnapshot === 'number') {
+            return true;
+          }
+
+          return typeof timerSnapshot?.finishTimestamp === 'number';
+        })
+        .map(([key, timerSnapshot]) => {
+          if (typeof timerSnapshot === 'number') {
+            return [key, { finishTimestamp: timerSnapshot }];
+          }
+
+          return [key, timerSnapshot];
+        })
+    );
+  } catch {
+    return {};
+  }
+}
+
 const KYWashSystem = () => {
   const [user, setUser] = useState<User | null>(null);
   const [currentView, setCurrentView] = useState<'main' | 'admin' | 'history' | 'stats' | 'dryer-stats' | 'feedback' | 'user-guide'>('main');
@@ -187,6 +235,7 @@ const KYWashSystem = () => {
   const [chatMessage, setChatMessage] = useState<string>('');
   const [showCommunityChat, setShowCommunityChat] = useState<boolean>(false);
   const [lastSeenChatTimestamp, setLastSeenChatTimestamp] = useState<number>(0);
+  const [timerStateReady, setTimerStateReady] = useState<boolean>(false);
 
   // Initialize last-seen timestamp to now on first load to avoid marking all existing messages as unread
   useEffect(() => {
@@ -244,33 +293,8 @@ const KYWashSystem = () => {
             // Update machines - preserve originalDuration if present
             setMachines((prevMachines) =>
               newState.machines.map((m: any) => {
-                const id = parseInt(m.id);
-                const type = m.type;
-                const prev = prevMachines.find((pm) => pm.id === id && pm.type === type);
-                let finishTimestamp: number | undefined;
-
-                if (m.status === 'running') {
-                  finishTimestamp = typeof m.finishTimestamp === 'number'
-                    ? m.finishTimestamp
-                    : (typeof m.timeLeft === 'number' && m.timeLeft > 0 ? Date.now() + m.timeLeft * 1000 : undefined);
-                }
-
-                const normalizedTimeLeft = m.status === 'running' && typeof m.timeLeft === 'number'
-                  ? Math.max(0, Math.floor(m.timeLeft))
-                  : 0;
-
-                return {
-                  id,
-                  type,
-                  status: m.status,
-                  timeLeft: normalizedTimeLeft,
-                  finishTimestamp,
-                  mode: m.mode || null,
-                  locked: m.locked,
-                  userStudentId: m.userStudentId || null,
-                  userPhone: m.userPhone || null,
-                  originalDuration: m.originalDuration || undefined,
-                } as Machine;
+                const prev = prevMachines.find((pm) => pm.id === parseInt(m.id) && pm.type === m.type);
+                return mergeMachineSnapshot(prev, m, Date.now());
               })
             );
 
@@ -369,26 +393,8 @@ const KYWashSystem = () => {
                 return prevMachine;
               }
 
-              // Accept server state for all other cases (this ensures we see other users' starts)
-              let finishTimestamp: number | undefined;
-              if (m.status === 'running') {
-                finishTimestamp = typeof m.finishTimestamp === 'number'
-                  ? m.finishTimestamp
-                  : (typeof m.timeLeft === 'number' && m.timeLeft > 0 ? Date.now() + m.timeLeft * 1000 : undefined);
-              }
-
-              return {
-                id: parseInt(m.id),
-                type: m.type,
-                status: m.status,
-                timeLeft: m.status === 'running' && typeof m.timeLeft === 'number' ? Math.max(0, Math.floor(m.timeLeft)) : 0,
-                mode: m.mode || null,
-                locked: m.locked,
-                userStudentId: m.userStudentId || null,
-                userPhone: m.userPhone || null,
-                originalDuration: m.originalDuration || undefined,
-                finishTimestamp,
-              }; 
+              // Accept server state for all other cases while preserving an active local cycle.
+              return mergeMachineSnapshot(prevMachine, m, Date.now());
             });
           });
 
@@ -473,6 +479,68 @@ const KYWashSystem = () => {
     };
   }, []);
 
+  // Restore active timers immediately after hydration so a refresh does not reset the UI countdown.
+  // The server API remains the shared source of truth for all users.
+  useEffect(() => {
+    const persistedTimers = loadPersistedMachineTimers();
+
+    if (Object.keys(persistedTimers).length > 0) {
+      const now = Date.now();
+
+      setMachines((prevMachines) =>
+        prevMachines.map((machine) => {
+          const machineKey = getMachineTimerKey(machine.type, machine.id);
+          const finishTimestamp = persistedTimers[machineKey];
+
+          if (typeof finishTimestamp?.finishTimestamp !== 'number' || finishTimestamp.finishTimestamp <= now) {
+            return machine;
+          }
+
+          return {
+            ...machine,
+            status: 'running',
+            timeLeft: Math.max(0, Math.ceil((finishTimestamp.finishTimestamp - now) / 1000)),
+            finishTimestamp: finishTimestamp.finishTimestamp,
+            mode: finishTimestamp.mode ?? machine.mode ?? null,
+            userStudentId: finishTimestamp.userStudentId ?? machine.userStudentId ?? null,
+            userPhone: finishTimestamp.userPhone ?? machine.userPhone ?? null,
+            originalDuration: finishTimestamp.originalDuration ?? machine.originalDuration ?? undefined,
+          };
+        })
+      );
+    }
+
+    setTimerStateReady(true);
+  }, []);
+
+  // Persist active finish timestamps so refreshes can restore the live countdown immediately.
+  useEffect(() => {
+    if (!timerStateReady || typeof window === 'undefined') {
+      return;
+    }
+
+    const persistedTimers: Record<string, PersistedMachineTimerSnapshot> = {};
+
+    machines.forEach((machine) => {
+      if (machine.status === 'running' && typeof machine.finishTimestamp === 'number') {
+        persistedTimers[getMachineTimerKey(machine.type, machine.id)] = {
+          finishTimestamp: machine.finishTimestamp,
+          mode: machine.mode,
+          userStudentId: machine.userStudentId,
+          userPhone: machine.userPhone,
+          originalDuration: machine.originalDuration,
+        };
+      }
+    });
+
+    if (Object.keys(persistedTimers).length === 0) {
+      window.localStorage.removeItem(MACHINE_TIMER_STORAGE_KEY);
+      return;
+    }
+
+    window.localStorage.setItem(MACHINE_TIMER_STORAGE_KEY, JSON.stringify(persistedTimers));
+  }, [machines, timerStateReady]);
+
   // Replace per-machine decrement with a single tick that computes remaining time from finishTimestamp.
   // This avoids drift, prevents polling from stomping local timers, and centralizes completion handling.
   const [nowTick, setNowTick] = useState<number>(Date.now());
@@ -481,6 +549,42 @@ const KYWashSystem = () => {
     const interval = setInterval(() => setNowTick(Date.now()), 250);
     return () => clearInterval(interval);
   }, []);
+
+  const mergeMachineSnapshot = (
+    prevMachine: Machine | undefined,
+    incomingMachine: any,
+    now: number
+  ): Machine => {
+    const incomingStatus = incomingMachine.status as Machine['status'];
+    const prevFinishTimestamp = typeof prevMachine?.finishTimestamp === 'number' ? prevMachine.finishTimestamp : undefined;
+    const incomingFinishTimestamp = typeof incomingMachine.finishTimestamp === 'number' ? incomingMachine.finishTimestamp : undefined;
+    const finishTimestamp = incomingFinishTimestamp ?? prevFinishTimestamp;
+    const prevRemainingSeconds = prevFinishTimestamp !== undefined
+      ? Math.max(0, Math.ceil((prevFinishTimestamp - now) / 1000))
+      : 0;
+    const preserveActiveCycle = Boolean(
+      prevMachine &&
+      (prevMachine.status === 'running' || prevMachine.status === 'pending-collection') &&
+      prevRemainingSeconds > 0
+    );
+    const status = preserveActiveCycle ? 'running' : incomingStatus;
+    const hasLiveValue = (value: unknown): boolean => value !== null && value !== undefined && value !== '';
+
+    return {
+      id: parseInt(incomingMachine.id),
+      type: incomingMachine.type,
+      status,
+      timeLeft: status === 'running'
+        ? Math.max(0, Math.ceil(((finishTimestamp ?? prevFinishTimestamp ?? now) - now) / 1000))
+        : 0,
+      mode: hasLiveValue(incomingMachine.mode) ? incomingMachine.mode : prevMachine?.mode ?? null,
+      locked: incomingMachine.locked,
+      userStudentId: hasLiveValue(incomingMachine.userStudentId) ? incomingMachine.userStudentId : prevMachine?.userStudentId ?? null,
+      userPhone: hasLiveValue(incomingMachine.userPhone) ? incomingMachine.userPhone : prevMachine?.userPhone ?? null,
+      originalDuration: incomingMachine.originalDuration ?? prevMachine?.originalDuration ?? undefined,
+      finishTimestamp: status === 'running' && finishTimestamp !== undefined ? finishTimestamp : undefined,
+    };
+  };
 
   // Safety: If we receive a running machine with a server-provided timeLeft but no finishTimestamp,
   // compute a canonical finishTimestamp on the client so timers don't vanish when polling lacks timestamp.
@@ -741,6 +845,8 @@ const KYWashSystem = () => {
       }
 
       const remainingMs = machine.finishTimestamp - nowTick;
+      // Keep the running card visible through the final visible second so the
+      // countdown reaches 00:00 before switching to collection mode.
       if (remainingMs <= 0 && !transitionHandledRef.current.has(machineKey)) {
         transitionHandledRef.current.add(machineKey);
 
@@ -2646,13 +2752,12 @@ const KYWashSystem = () => {
                       )}
                     </div>
                     <p className={`text-sm capitalize ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{machine.locked ? 'Locked by Admin' : machine.status}</p>
-                    {(machine.status === 'running' || machine.status === 'pending-collection') && !machine.locked && (
+                    {machine.status === 'running' && !machine.locked && (
                       <>
-                        <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>User: {machine.userStudentId}</p>
+                        <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Mode: {machine.mode || '—'}</p>
+                        <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>User: {machine.userStudentId || '—'}</p>
+                        <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Phone: {machine.userPhone || '—'}</p>
                         <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Time Left: {formatTime(getTimeLeftSeconds(machine))}</p>
-                        {machine.status === 'pending-collection' && (
-                          <p className={`text-xs font-semibold mt-1 ${darkMode ? 'text-yellow-300' : 'text-yellow-700'}`}>Pending collection — please collect your clothes</p>
-                        )}
                       </>
                     )} 
                   </div>
@@ -3464,7 +3569,7 @@ const KYWashSystem = () => {
                             <p className={`text-2xl font-bold text-center py-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
                               {formatTime(getTimeLeftSeconds(machine))}
                             </p>
-                            {machine.userStudentId === user?.studentId && (
+                            {machine.status === 'running' && machine.userStudentId === user?.studentId && (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -3482,60 +3587,44 @@ const KYWashSystem = () => {
                         )}
 
                         {machine.status === 'pending-collection' && (
-                          <>
-                            <p className={`text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
-                              ✅ Cycle complete — awaiting collection
-                            </p>
-                            <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Previous user: {machine.userStudentId}</p>
-                            {(() => {
-                              const collectionState = getCollectionActionState(
-                                machine as any,
-                                user?.studentId,
-                                machineCollectionStatus.get(buildMachineCollectionKey(machine.type, machine.id)) || null
-                              );
+                          (() => {
+                            const collectionState = getCollectionActionState(
+                              machine as any,
+                              user?.studentId,
+                              machineCollectionStatus.get(buildMachineCollectionKey(machine.type, machine.id)) || null
+                            );
 
-                              return (
-                                <div className="space-y-2">
-                                  {collectionState.showPendingNotice && (
-                                    <p className={`text-sm ${darkMode ? 'text-yellow-300' : 'text-yellow-700'}`}>
-                                      {collectionState.pendingNotice}
-                                    </p>
-                                  )}
-                                  {collectionState.showOnTheWay && (
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleMachineCollectionStatus(machine.id, machine.type, 'coming');
-                                      }}
-                                      className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                        darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
-                                      }`}
-                                    >
-                                      On the Way
-                                    </button>
-                                  )}
-                                  {collectionState.showClothesCollected && (
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleMachineCollectionStatus(machine.id, machine.type, 'collected');
-                                      }}
-                                      className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                        darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
-                                      }`}
-                                    >
-                                      Clothes Collected
-                                    </button>
-                                  )}
-                                  {!collectionState.showOnTheWay && !collectionState.showClothesCollected && (
-                                    <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                      Pending collection — other users can see this machine is ready for pickup.
-                                    </p>
-                                  )}
-                                </div>
-                              );
-                            })()}
-                          </>
+                            return (
+                              <div className="space-y-2 mt-2">
+                                {collectionState.showOnTheWay && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMachineCollectionStatus(machine.id, machine.type, 'coming');
+                                    }}
+                                    className={`w-full px-4 py-3 rounded-xl text-sm font-semibold transition-all shadow-lg ring-2 ring-transparent hover:-translate-y-0.5 ${
+                                      darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
+                                    }`}
+                                  >
+                                    On the Way
+                                  </button>
+                                )}
+                                {collectionState.showClothesCollected && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMachineCollectionStatus(machine.id, machine.type, 'collected');
+                                    }}
+                                    className={`w-full px-4 py-3 rounded-xl text-sm font-semibold transition-all shadow-lg ring-2 ring-transparent hover:-translate-y-0.5 ${
+                                      darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
+                                    }`}
+                                  >
+                                    Clothes Collected
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })()
                         )}
 
                         {machine.status === 'available' && !machine.locked && (
@@ -3626,7 +3715,7 @@ const KYWashSystem = () => {
                             <p className={`text-2xl font-bold text-center py-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
                               {formatTime(getTimeLeftSeconds(machine))}
                             </p>
-                            {machine.userStudentId === user?.studentId && (
+                            {machine.status === 'running' && machine.userStudentId === user?.studentId && (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -3644,60 +3733,44 @@ const KYWashSystem = () => {
                         )}
 
                         {machine.status === 'pending-collection' && (
-                          <>
-                            <p className={`text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
-                              ✅ Cycle complete — awaiting collection
-                            </p>
-                            <p className={`text-sm mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Previous user: {machine.userStudentId}</p>
-                            {(() => {
-                              const collectionState = getCollectionActionState(
-                                machine as any,
-                                user?.studentId,
-                                machineCollectionStatus.get(buildMachineCollectionKey(machine.type, machine.id)) || null
-                              );
+                          (() => {
+                            const collectionState = getCollectionActionState(
+                              machine as any,
+                              user?.studentId,
+                              machineCollectionStatus.get(buildMachineCollectionKey(machine.type, machine.id)) || null
+                            );
 
-                              return (
-                                <div className="space-y-2">
-                                  {collectionState.showPendingNotice && (
-                                    <p className={`text-sm ${darkMode ? 'text-yellow-300' : 'text-yellow-700'}`}>
-                                      {collectionState.pendingNotice}
-                                    </p>
-                                  )}
-                                  {collectionState.showOnTheWay && (
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleMachineCollectionStatus(machine.id, machine.type, 'coming');
-                                      }}
-                                      className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                        darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
-                                      }`}
-                                    >
-                                      On the Way
-                                    </button>
-                                  )}
-                                  {collectionState.showClothesCollected && (
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleMachineCollectionStatus(machine.id, machine.type, 'collected');
-                                      }}
-                                      className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
-                                        darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
-                                      }`}
-                                    >
-                                      Clothes Collected
-                                    </button>
-                                  )}
-                                  {!collectionState.showOnTheWay && !collectionState.showClothesCollected && (
-                                    <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                      Pending collection — other users can see this machine is ready for pickup.
-                                    </p>
-                                  )}
-                                </div>
-                              );
-                            })()}
-                          </>
+                            return (
+                              <div className="space-y-2 mt-2">
+                                {collectionState.showOnTheWay && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMachineCollectionStatus(machine.id, machine.type, 'coming');
+                                    }}
+                                    className={`w-full px-4 py-3 rounded-xl text-sm font-semibold transition-all shadow-lg ring-2 ring-transparent hover:-translate-y-0.5 ${
+                                      darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
+                                    }`}
+                                  >
+                                    On the Way
+                                  </button>
+                                )}
+                                {collectionState.showClothesCollected && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMachineCollectionStatus(machine.id, machine.type, 'collected');
+                                    }}
+                                    className={`w-full px-4 py-3 rounded-xl text-sm font-semibold transition-all shadow-lg ring-2 ring-transparent hover:-translate-y-0.5 ${
+                                      darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
+                                    }`}
+                                  >
+                                    Clothes Collected
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })()
                         )}
 
                         {machine.status === 'available' && !machine.locked && (

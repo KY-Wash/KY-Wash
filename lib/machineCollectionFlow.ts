@@ -49,6 +49,17 @@ export function getCollectionActionState(
     };
   }
 
+  if (effectiveCollectionState?.status === 'coming') {
+    return {
+      showOnTheWay: true,
+      showClothesCollected: true,
+      showPendingNotice: true,
+      pendingNotice: pendingUser
+        ? `${pendingUser} is on the way to collect clothes.`
+        : 'Pending collection — please collect your clothes.',
+    };
+  }
+
   return {
     showOnTheWay: false,
     showClothesCollected: false,
