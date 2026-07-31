@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Waves, Loader2, Clock, Users, AlertCircle, LogOut, Settings, ChevronDown, ChevronUp, Lock, Unlock, History, TrendingUp, X, Edit2, BarChart3, Trash2 } from 'lucide-react';
 import Image from 'next/image';
-import { insertUsageRecord, updateUsageRecordStatus, supabase } from '@/lib/supabase';
+import { updateUsageRecordStatus, supabase } from '@/lib/supabase';
 import { buildMachineCollectionKey, getCollectionActionState } from '@/lib/machineCollectionFlow';
 
 interface User {
@@ -113,11 +113,26 @@ interface ChatMessage {
 
 const MACHINE_TIMER_STORAGE_KEY = 'kyWashMachineTimers';
 
+<<<<<<< HEAD
+interface PersistedMachineTimerSnapshot {
+  finishTimestamp: number;
+  mode?: string | null;
+  userStudentId?: string | null;
+  userPhone?: string | null;
+  originalDuration?: number;
+}
+
+=======
+>>>>>>> origin/main
 function getMachineTimerKey(machineType: 'washer' | 'dryer', machineId: number): string {
   return `${machineType}-${machineId}`;
 }
 
+<<<<<<< HEAD
+function loadPersistedMachineTimers(): Record<string, PersistedMachineTimerSnapshot> {
+=======
 function loadPersistedMachineTimers(): Record<string, number> {
+>>>>>>> origin/main
   if (typeof window === 'undefined') {
     return {};
   }
@@ -128,9 +143,29 @@ function loadPersistedMachineTimers(): Record<string, number> {
   }
 
   try {
+<<<<<<< HEAD
+    const parsed = JSON.parse(savedTimers) as Record<string, number | PersistedMachineTimerSnapshot>;
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter(([, timerSnapshot]) => {
+          if (typeof timerSnapshot === 'number') {
+            return true;
+          }
+
+          return typeof timerSnapshot?.finishTimestamp === 'number';
+        })
+        .map(([key, timerSnapshot]) => {
+          if (typeof timerSnapshot === 'number') {
+            return [key, { finishTimestamp: timerSnapshot }];
+          }
+
+          return [key, timerSnapshot];
+        })
+=======
     const parsed = JSON.parse(savedTimers) as Record<string, number>;
     return Object.fromEntries(
       Object.entries(parsed).filter(([, finishTimestamp]) => typeof finishTimestamp === 'number')
+>>>>>>> origin/main
     );
   } catch {
     return {};
@@ -245,7 +280,7 @@ const KYWashSystem = () => {
   ];
 
   // Real-time sync with polling
-  const socketRef = useRef<{ emit: (event: string, data: any) => Promise<void> } | null>(null);
+  const socketRef = useRef<{ emit: (event: string, data: any) => Promise<{ success?: boolean; state?: any; error?: string; status?: number } | undefined> } | null>(null);
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
   const [stateHydrated, setStateHydrated] = useState<boolean>(false);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -263,84 +298,95 @@ const KYWashSystem = () => {
           body: JSON.stringify({ event, data }),
         });
 
-        if (response.ok) {
-          const result = await response.json();
-          if (result.state) {
-            const newState = result.state;
+        const result = await response.json().catch(() => null);
+
+        if (response.ok && result?.state) {
+          const newState = result.state;
             
+<<<<<<< HEAD
+          // Update machines - preserve originalDuration if present
+          setMachines((prevMachines) =>
+            newState.machines.map((m: any) => {
+              const prev = prevMachines.find((pm) => pm.id === parseInt(m.id) && pm.type === m.type);
+              return mergeMachineSnapshot(prev, m, Date.now());
+            })
+          );
+
+          // Update waitlists
+          if (newState.waitlists) {
+            setWaitlists({
+              washers: newState.waitlists.washers || [],
+              dryers: newState.waitlists.dryers || [],
+            });
+          }
+
+          // Update reported issues
+          if (newState.reportedIssues) {
+            setReportedIssues(
+              newState.reportedIssues.map((issue: any) => ({
+                id: issue.id,
+                type: issue.type || issue.machineType,
+                machine_id: parseInt(issue.machine_id || issue.machineId),
+                reportedBy: issue.reportedBy,
+                phone: issue.phone,
+                description: issue.description,
+                timestamp: issue.timestamp,
+                date: issue.date,
+                resolved: issue.resolved,
+              }))
+=======
             // Update machines - preserve originalDuration if present
             setMachines((prevMachines) =>
               newState.machines.map((m: any) => {
                 const prev = prevMachines.find((pm) => pm.id === parseInt(m.id) && pm.type === m.type);
                 return mergeMachineSnapshot(prev, m, Date.now());
               })
+>>>>>>> origin/main
             );
+          }
 
-            // Update waitlists
-            if (newState.waitlists) {
-              setWaitlists({
-                washers: newState.waitlists.washers || [],
-                dryers: newState.waitlists.dryers || [],
-              });
-            }
+          // Update machine collection status (for 'coming' / 'collected')
+          if (newState.machineCollectionStatus) {
+            const map = new Map<string, { status: 'waiting' | 'coming' | 'collected'; user: string }>();
+            Object.entries(newState.machineCollectionStatus).forEach(([k, v]: any) => {
+              map.set(k, v as { status: 'waiting' | 'coming' | 'collected'; user: string });
+            });
+            setMachineCollectionStatus(map);
+          } else {
+            setMachineCollectionStatus(new Map());
+          }
 
-            // Update reported issues
-            if (newState.reportedIssues) {
-              setReportedIssues(
-                newState.reportedIssues.map((issue: any) => ({
-                  id: issue.id,
-                  type: issue.type || issue.machineType,
-                  machine_id: parseInt(issue.machine_id || issue.machineId),
-                  reportedBy: issue.reportedBy,
-                  phone: issue.phone,
-                  description: issue.description,
-                  timestamp: issue.timestamp,
-                  date: issue.date,
-                  resolved: issue.resolved,
-                }))
-              );
-            }
+          // Update usage history
+          if (newState.usageHistory) {
+            setUsageHistory(
+              newState.usageHistory.map((record: any) => ({
+                id: record.id,
+                type: record.type || record.machineType,
+                machine_id: parseInt(record.machine_id || record.machineId),
+                mode: record.mode,
+                duration: record.duration,
+                date: record.date,
+                day: record.day || '',
+                time: record.time || '',
+                studentId: record.studentId,
+                timestamp: record.timestamp,
+                spending: record.spending || 0,
+                status: record.status || 'completed',
+              }))
+            );
+          }
 
-            // Update machine collection status (for 'coming' / 'collected')
-            if (newState.machineCollectionStatus) {
-              const map = new Map<string, { status: 'waiting' | 'coming' | 'collected'; user: string }>();
-              Object.entries(newState.machineCollectionStatus).forEach(([k, v]: any) => {
-                map.set(k, v as { status: 'waiting' | 'coming' | 'collected'; user: string });
-              });
-              setMachineCollectionStatus(map);
-            } else {
-              setMachineCollectionStatus(new Map());
-            }
-
-            // Update usage history
-            if (newState.usageHistory) {
-              setUsageHistory(
-                newState.usageHistory.map((record: any) => ({
-                  id: record.id,
-                  type: record.type || record.machineType,
-                  machine_id: parseInt(record.machine_id || record.machineId),
-                  mode: record.mode,
-                  duration: record.duration,
-                  date: record.date,
-                  day: record.day || '',
-                  time: record.time || '',
-                  studentId: record.studentId,
-                  timestamp: record.timestamp,
-                  spending: record.spending || 0,
-                  status: record.status || 'completed',
-                }))
-              );
-            }
-
-            // Update users
-            if (newState.users) {
-              setUsers(newState.users);
-            }
+          // Update users
+          if (newState.users) {
+            setUsers(newState.users);
           }
         }
+
+        return result;
       } catch (error) {
         console.error(`Failed to emit ${event}:`, error);
-      }
+        return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+        }
     };
 
     socketRef.current = { emit };
@@ -353,11 +399,14 @@ const KYWashSystem = () => {
         if (response.ok) {
           const newState = await response.json();
 
-          // Update machines from API - be smart about not reverting recent state changes
+          // Update machines from API using the server snapshot as the source of truth.
           setMachines((prevMachines) => {
             return newState.machines.map((m: any) => {
               // Find the previous machine state
               const prevMachine = prevMachines.find((pm) => pm.id === parseInt(m.id) && pm.type === m.type);
+<<<<<<< HEAD
+              // Keep any missing fields stable, but do not override the server status.
+=======
 
               // Protect against polling flipping a pending-collection back to running
               if (prevMachine?.status === 'pending-collection' && m.status === 'running') {
@@ -372,6 +421,7 @@ const KYWashSystem = () => {
               }
 
               // Accept server state for all other cases while preserving an active local cycle.
+>>>>>>> origin/main
               return mergeMachineSnapshot(prevMachine, m, Date.now());
             });
           });
@@ -470,15 +520,28 @@ const KYWashSystem = () => {
           const machineKey = getMachineTimerKey(machine.type, machine.id);
           const finishTimestamp = persistedTimers[machineKey];
 
+<<<<<<< HEAD
+          if (typeof finishTimestamp?.finishTimestamp !== 'number' || finishTimestamp.finishTimestamp <= now) {
+=======
           if (typeof finishTimestamp !== 'number' || finishTimestamp <= now) {
+>>>>>>> origin/main
             return machine;
           }
 
           return {
             ...machine,
             status: 'running',
+<<<<<<< HEAD
+            timeLeft: Math.max(0, Math.ceil((finishTimestamp.finishTimestamp - now) / 1000)),
+            finishTimestamp: finishTimestamp.finishTimestamp,
+            mode: finishTimestamp.mode ?? machine.mode ?? null,
+            userStudentId: finishTimestamp.userStudentId ?? machine.userStudentId ?? null,
+            userPhone: finishTimestamp.userPhone ?? machine.userPhone ?? null,
+            originalDuration: finishTimestamp.originalDuration ?? machine.originalDuration ?? undefined,
+=======
             timeLeft: Math.max(0, Math.ceil((finishTimestamp - now) / 1000)),
             finishTimestamp,
+>>>>>>> origin/main
           };
         })
       );
@@ -493,11 +556,25 @@ const KYWashSystem = () => {
       return;
     }
 
+<<<<<<< HEAD
+    const persistedTimers: Record<string, PersistedMachineTimerSnapshot> = {};
+
+    machines.forEach((machine) => {
+      if (machine.status === 'running' && typeof machine.finishTimestamp === 'number') {
+        persistedTimers[getMachineTimerKey(machine.type, machine.id)] = {
+          finishTimestamp: machine.finishTimestamp,
+          mode: machine.mode,
+          userStudentId: machine.userStudentId,
+          userPhone: machine.userPhone,
+          originalDuration: machine.originalDuration,
+        };
+=======
     const persistedTimers: Record<string, number> = {};
 
     machines.forEach((machine) => {
       if (machine.status === 'running' && typeof machine.finishTimestamp === 'number') {
         persistedTimers[getMachineTimerKey(machine.type, machine.id)] = machine.finishTimestamp;
+>>>>>>> origin/main
       }
     });
 
@@ -527,6 +604,9 @@ const KYWashSystem = () => {
     const prevFinishTimestamp = typeof prevMachine?.finishTimestamp === 'number' ? prevMachine.finishTimestamp : undefined;
     const incomingFinishTimestamp = typeof incomingMachine.finishTimestamp === 'number' ? incomingMachine.finishTimestamp : undefined;
     const finishTimestamp = incomingFinishTimestamp ?? prevFinishTimestamp;
+<<<<<<< HEAD
+    const hasLiveValue = (value: unknown): boolean => value !== null && value !== undefined && value !== '';
+=======
     const prevRemainingSeconds = prevFinishTimestamp !== undefined
       ? Math.max(0, Math.ceil((prevFinishTimestamp - now) / 1000))
       : 0;
@@ -536,10 +616,23 @@ const KYWashSystem = () => {
       prevRemainingSeconds > 0
     );
     const status = preserveActiveCycle ? 'running' : incomingStatus;
+>>>>>>> origin/main
 
     return {
       id: parseInt(incomingMachine.id),
       type: incomingMachine.type,
+<<<<<<< HEAD
+      status: incomingStatus,
+      timeLeft: incomingStatus === 'running'
+        ? Math.max(0, Math.ceil(((finishTimestamp ?? prevFinishTimestamp ?? now) - now) / 1000))
+        : 0,
+      mode: hasLiveValue(incomingMachine.mode) ? incomingMachine.mode : prevMachine?.mode ?? null,
+      locked: incomingMachine.locked,
+      userStudentId: hasLiveValue(incomingMachine.userStudentId) ? incomingMachine.userStudentId : prevMachine?.userStudentId ?? null,
+      userPhone: hasLiveValue(incomingMachine.userPhone) ? incomingMachine.userPhone : prevMachine?.userPhone ?? null,
+      originalDuration: incomingMachine.originalDuration ?? prevMachine?.originalDuration ?? undefined,
+      finishTimestamp: incomingStatus === 'running' && finishTimestamp !== undefined ? finishTimestamp : undefined,
+=======
       status,
       timeLeft: status === 'running'
         ? Math.max(0, Math.ceil(((finishTimestamp ?? prevFinishTimestamp ?? now) - now) / 1000))
@@ -550,6 +643,7 @@ const KYWashSystem = () => {
       userPhone: incomingMachine.userPhone ?? prevMachine?.userPhone ?? null,
       originalDuration: incomingMachine.originalDuration ?? prevMachine?.originalDuration ?? undefined,
       finishTimestamp: status === 'running' && finishTimestamp !== undefined ? finishTimestamp : undefined,
+>>>>>>> origin/main
     };
   };
 
@@ -814,7 +908,11 @@ const KYWashSystem = () => {
       const remainingMs = machine.finishTimestamp - nowTick;
       // Keep the running card visible through the final visible second so the
       // countdown reaches 00:00 before switching to collection mode.
+<<<<<<< HEAD
+      if (remainingMs <= 0 && !transitionHandledRef.current.has(machineKey)) {
+=======
       if (remainingMs <= -1000 && !transitionHandledRef.current.has(machineKey)) {
+>>>>>>> origin/main
         transitionHandledRef.current.add(machineKey);
 
         setMachines((prev) => prev.map((m) =>
@@ -1194,7 +1292,7 @@ const KYWashSystem = () => {
     }
   };
 
-  const startMachine = (machineId: number, machineType: 'washer' | 'dryer', mode: Mode): void => {
+  const startMachine = async (machineId: number, machineType: 'washer' | 'dryer', mode: Mode): Promise<void> => {
     if (!user) return;
     if (!stateHydrated) {
       showNotification('Loading live machine state. Please wait a moment and try again.');
@@ -1225,18 +1323,7 @@ const KYWashSystem = () => {
       return;
     }
 
-    // Calculate spending based on mode
-    const spending = getSpendingForMode(mode.name);
-
-    // Get current date and time
-    const now = new Date();
-    const dateStr = now.toLocaleDateString();
-    const timeStr = now.toLocaleTimeString();
-    const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][now.getDay()];
-
-    // Emit to real-time API
-    if (socketRef.current?.emit) {
-      socketRef.current.emit('machine-start', {
+    const result = await socketRef.current?.emit?.('machine-start', {
         machineId: String(machineId),
         machineType: machineType,
         mode: mode.name,
@@ -1244,6 +1331,10 @@ const KYWashSystem = () => {
         studentId: user.studentId,
         phoneNumber: user.phoneNumber,
       });
+    if (!result?.success) {
+      const message = result?.error || 'This machine could not be started. Please try again.';
+      alert(message);
+      return;
     }
 
     const machineKey = `${machineType}-${machineId}`;
@@ -1252,58 +1343,7 @@ const KYWashSystem = () => {
     reminderSentRef.current.delete(machineKey);
     stopContinuousNotificationRing();
 
-    setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
-      machine.id === machineId && machine.type === machineType
-        ? {
-            ...machine,
-            status: 'running',
-            timeLeft: mode.duration * 60,
-            finishTimestamp: Date.now() + mode.duration * 60 * 1000,
-            mode: mode.name,
-            userStudentId: user.studentId,
-            userPhone: user.phoneNumber,
-            originalDuration: mode.duration
-          }
-        : machine
-    ));
-
-    // Sync to Supabase
-    const newHistoryRecord: UsageHistory = {
-      id: `${Date.now()}-${Math.random()}`,
-      type: machineType,
-      machine_id: machineId,
-      mode: mode.name,
-      duration: mode.duration,
-      date: dateStr,
-      day: dayName,
-      time: timeStr,
-      studentId: user.studentId,
-      timestamp: Date.now(),
-      spending: spending,
-      status: 'In Progress'
-    };
-
-    // Add to local history
-    setUsageHistory((prev: UsageHistory[]) => [...prev, newHistoryRecord]);
-
-    // Sync to Supabase
-    insertUsageRecord(
-      {
-        studentid: user.studentId,
-        phone_number: user.phoneNumber,
-        type: machineType,
-        machine_id: machineId,
-        mode: mode.name,
-        duration: mode.duration,
-        spending: spending,
-        status: 'In Progress',
-        date: dateStr,
-        day: dayName,
-        time: timeStr,
-        timestamp: Date.now()
-      }
-    );
-
+    const spending = getSpendingForMode(mode.name);
     showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} started! Phone: ${user.phoneNumber} | Charge: RM${spending}`);
   };
 
@@ -3554,6 +3594,46 @@ const KYWashSystem = () => {
                         )}
 
                         {machine.status === 'pending-collection' && (
+<<<<<<< HEAD
+                          (() => {
+                            const collectionState = getCollectionActionState(
+                              machine as any,
+                              user?.studentId,
+                              machineCollectionStatus.get(buildMachineCollectionKey(machine.type, machine.id)) || null
+                            );
+
+                            return (
+                              <div className="space-y-2 mt-2">
+                                {collectionState.showOnTheWay && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMachineCollectionStatus(machine.id, machine.type, 'coming');
+                                    }}
+                                    className={`w-full px-4 py-3 rounded-xl text-sm font-semibold transition-all shadow-lg ring-2 ring-transparent hover:-translate-y-0.5 ${
+                                      darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
+                                    }`}
+                                  >
+                                    On the Way
+                                  </button>
+                                )}
+                                {collectionState.showClothesCollected && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMachineCollectionStatus(machine.id, machine.type, 'collected');
+                                    }}
+                                    className={`w-full px-4 py-3 rounded-xl text-sm font-semibold transition-all shadow-lg ring-2 ring-transparent hover:-translate-y-0.5 ${
+                                      darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
+                                    }`}
+                                  >
+                                    Clothes Collected
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })()
+=======
                           <>
                             <p className={`text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
                               ✅ Cycle complete — awaiting collection
@@ -3610,6 +3690,7 @@ const KYWashSystem = () => {
                               );
                             })()}
                           </>
+>>>>>>> origin/main
                         )}
 
                         {machine.status === 'available' && !machine.locked && (
@@ -3718,6 +3799,46 @@ const KYWashSystem = () => {
                         )}
 
                         {machine.status === 'pending-collection' && (
+<<<<<<< HEAD
+                          (() => {
+                            const collectionState = getCollectionActionState(
+                              machine as any,
+                              user?.studentId,
+                              machineCollectionStatus.get(buildMachineCollectionKey(machine.type, machine.id)) || null
+                            );
+
+                            return (
+                              <div className="space-y-2 mt-2">
+                                {collectionState.showOnTheWay && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMachineCollectionStatus(machine.id, machine.type, 'coming');
+                                    }}
+                                    className={`w-full px-4 py-3 rounded-xl text-sm font-semibold transition-all shadow-lg ring-2 ring-transparent hover:-translate-y-0.5 ${
+                                      darkMode ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
+                                    }`}
+                                  >
+                                    On the Way
+                                  </button>
+                                )}
+                                {collectionState.showClothesCollected && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMachineCollectionStatus(machine.id, machine.type, 'collected');
+                                    }}
+                                    className={`w-full px-4 py-3 rounded-xl text-sm font-semibold transition-all shadow-lg ring-2 ring-transparent hover:-translate-y-0.5 ${
+                                      darkMode ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
+                                    }`}
+                                  >
+                                    Clothes Collected
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })()
+=======
                           <>
                             <p className={`text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
                               ✅ Cycle complete — awaiting collection
@@ -3774,6 +3895,7 @@ const KYWashSystem = () => {
                               );
                             })()}
                           </>
+>>>>>>> origin/main
                         )}
 
                         {machine.status === 'available' && !machine.locked && (

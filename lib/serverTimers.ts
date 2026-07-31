@@ -23,6 +23,10 @@ function getActiveUsageByMachine(state: any): Map<string, any> {
   return activeUsageByMachine;
 }
 
+function hasLiveValue(value: unknown): boolean {
+  return value !== null && value !== undefined && value !== '';
+}
+
 // Restore running cycles from persisted machine metadata or active usage history.
 // This is the source of truth used after reloads and on multi-device refreshes.
 export function rehydrateActiveCycles(state: any, now = Date.now()): boolean {
@@ -108,9 +112,9 @@ export function rehydrateActiveCycles(state: any, now = Date.now()): boolean {
     }
 
     if (activeRecord) {
-      machine.userStudentId = machine.userStudentId || activeRecord.studentId || '';
-      machine.userPhone = machine.userPhone || activeRecord.phoneNumber || activeRecord.phone || '';
-      machine.mode = machine.mode || activeRecord.mode || '';
+      machine.userStudentId = hasLiveValue(machine.userStudentId) ? machine.userStudentId : (activeRecord.studentId || '');
+      machine.userPhone = hasLiveValue(machine.userPhone) ? machine.userPhone : (activeRecord.phoneNumber || activeRecord.phone || '');
+      machine.mode = hasLiveValue(machine.mode) ? machine.mode : (activeRecord.mode || '');
     }
   });
 
@@ -150,7 +154,10 @@ export function recoverStartTimes(state: any, now = Date.now()) {
 }
 
 export function computeStateForClient(state: any, now = Date.now()) {
+  const activeUsageByMachine = getActiveUsageByMachine(state);
   const machines = (state.machines || []).map((m: any) => {
+    const key = getMachineKey(m);
+    const activeRecord = activeUsageByMachine.get(key);
     let finishTimestamp: number | undefined;
     if (m.status === 'running') {
       if (typeof m.finishTimestamp === 'number') {
@@ -164,7 +171,13 @@ export function computeStateForClient(state: any, now = Date.now()) {
         finishTimestamp = now + m.timeLeft * 1000;
       }
     }
-    return { ...m, finishTimestamp };
+    return {
+      ...m,
+      userStudentId: hasLiveValue(m.userStudentId) ? m.userStudentId : (activeRecord?.studentId || m.userStudentId),
+      userPhone: hasLiveValue(m.userPhone) ? m.userPhone : (activeRecord?.phoneNumber || activeRecord?.phone || m.userPhone),
+      mode: hasLiveValue(m.mode) ? m.mode : (activeRecord?.mode || m.mode),
+      finishTimestamp,
+    };
   });
   return { ...state, machines };
 }

@@ -33,6 +33,34 @@ describe('serverTimers', () => {
     expect(clientState.machines[0].finishTimestamp).toBe(now + 30 * 1000);
   });
 
+  it('preserves live identity fields for active machines when the machine row is partial', () => {
+    const now = 2_100_000_000_000;
+    const state: any = {
+      machines: [
+        { id: 8, type: 'washer', status: 'running', timeLeft: 1200, mode: '', userStudentId: '', userPhone: '' }
+      ],
+      usageHistory: [
+        {
+          id: 'h8',
+          studentId: 'S8',
+          machineType: 'washer',
+          machineId: 8,
+          mode: 'Normal',
+          phoneNumber: '0123456789',
+          timestamp: now - 5 * 60 * 1000,
+          status: 'In Progress'
+        }
+      ]
+    };
+
+    const clientState = computeStateForClient(state, now);
+    const machine = clientState.machines[0];
+
+    expect(machine.userStudentId).toBe('S8');
+    expect(machine.userPhone).toBe('0123456789');
+    expect(machine.mode).toBe('Normal');
+  });
+
   it('preserves an explicit finishTimestamp so the countdown reaches zero without drifting', () => {
     const now = 3_000_000_000_000;
     const state: any = {

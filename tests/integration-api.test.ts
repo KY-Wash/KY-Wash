@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createInitialState, getAppState, setAppState, updateAppState } from '../lib/sharedState';
 import { computeStateForClient, recoverStartTimes, tickServerTimers, startServerTimer as startServerTimerUtil } from '../lib/serverTimers';
+import stateHandler from '../pages/api/state';
 import fs from 'fs';
 import path from 'path';
 
@@ -94,5 +95,50 @@ describe('API integration tests', () => {
     // Ensure persisted state contains the user
     const persisted = JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
     expect(persisted.users.some((u: any) => u.studentId === 'S300' && u.phoneNumber === '0181112222')).toBe(true);
+  });
+
+  it('rejects a second machine start while the first cycle is active', async () => {
+    const firstStartRes = makeRes();
+    await stateHandler(
+      makeReq('POST', {
+        event: 'machine-start',
+        data: {
+          machineId: '1',
+          machineType: 'washer',
+          mode: 'Normal',
+          duration: 1,
+          studentId: 'S400',
+          phoneNumber: '0111111111',
+        },
+      }),
+      firstStartRes,
+    );
+
+    expect(firstStartRes._get().statusCode).toBe(200);
+    expect(firstStartRes._get().jsonBody.success).toBe(true);
+
+    const secondStartRes = makeRes();
+    await stateHandler(
+      makeReq('POST', {
+        event: 'machine-start',
+        data: {
+          machineId: '1',
+          machineType: 'washer',
+          mode: 'Normal',
+          duration: 1,
+          studentId: 'S401',
+          phoneNumber: '0222222222',
+        },
+      }),
+      secondStartRes,
+    );
+
+    expect(secondStartRes._get().statusCode).toBe(409);
+    expect(secondStartRes._get().jsonBody.success).toBe(false);
+    expect(secondStartRes._get().jsonBody.error).toContain('already in use');
+
+    const machine = getAppState().machines.find((m) => m.type === 'washer' && m.id === '1');
+    expect(machine?.status).toBe('running');
+    expect(machine?.userStudentId).toBe('S400');
   });
 });
