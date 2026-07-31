@@ -444,7 +444,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           const machine = state.machines.find(
             (m) => m.id === data.machineId && m.type === data.machineType
           );
-          if (machine && machine.status === 'available') {
+          if (!machine) {
+            return res.status(404).json({ success: false, error: 'Machine not found' });
+          }
+
+          if (machine.status !== 'available') {
+            return res.status(409).json({
+              success: false,
+              error: 'This machine is already in use or unavailable. Please wait until it is cancelled or collected before starting it again.',
+            });
+          }
+
+          const studentAlreadyHasActiveMachine = state.machines.some(
+            (m) => m.userStudentId === data.studentId && (m.status === 'running' || m.status === 'pending-collection')
+          );
+          if (studentAlreadyHasActiveMachine) {
+            return res.status(409).json({
+              success: false,
+              error: 'You already have an active machine running. Please finish or cancel it before starting another one.',
+            });
+          }
+
+          if (machine.status === 'available') {
             const durationInSeconds = data.duration * 60;
             const now = new Date();
             machine.status = 'running';

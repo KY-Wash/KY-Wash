@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Waves, Loader2, Clock, Users, AlertCircle, LogOut, Settings, ChevronDown, ChevronUp, Lock, Unlock, History, TrendingUp, X, Edit2, BarChart3, Trash2 } from 'lucide-react';
 import Image from 'next/image';
-import { insertUsageRecord, updateUsageRecordStatus, supabase } from '@/lib/supabase';
+import { updateUsageRecordStatus, supabase } from '@/lib/supabase';
 import { buildMachineCollectionKey, getCollectionActionState } from '@/lib/machineCollectionFlow';
 
 interface User {
@@ -267,7 +267,7 @@ const KYWashSystem = () => {
   ];
 
   // Real-time sync with polling
-  const socketRef = useRef<{ emit: (event: string, data: any) => Promise<void> } | null>(null);
+  const socketRef = useRef<{ emit: (event: string, data: any) => Promise<{ success?: boolean; state?: any; error?: string; status?: number } | undefined> } | null>(null);
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
   const [stateHydrated, setStateHydrated] = useState<boolean>(false);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -285,84 +285,86 @@ const KYWashSystem = () => {
           body: JSON.stringify({ event, data }),
         });
 
-        if (response.ok) {
-          const result = await response.json();
-          if (result.state) {
-            const newState = result.state;
+        const result = await response.json().catch(() => null);
+
+        if (response.ok && result?.state) {
+          const newState = result.state;
             
-            // Update machines - preserve originalDuration if present
-            setMachines((prevMachines) =>
-              newState.machines.map((m: any) => {
-                const prev = prevMachines.find((pm) => pm.id === parseInt(m.id) && pm.type === m.type);
-                return mergeMachineSnapshot(prev, m, Date.now());
-              })
+          // Update machines - preserve originalDuration if present
+          setMachines((prevMachines) =>
+            newState.machines.map((m: any) => {
+              const prev = prevMachines.find((pm) => pm.id === parseInt(m.id) && pm.type === m.type);
+              return mergeMachineSnapshot(prev, m, Date.now());
+            })
+          );
+
+          // Update waitlists
+          if (newState.waitlists) {
+            setWaitlists({
+              washers: newState.waitlists.washers || [],
+              dryers: newState.waitlists.dryers || [],
+            });
+          }
+
+          // Update reported issues
+          if (newState.reportedIssues) {
+            setReportedIssues(
+              newState.reportedIssues.map((issue: any) => ({
+                id: issue.id,
+                type: issue.type || issue.machineType,
+                machine_id: parseInt(issue.machine_id || issue.machineId),
+                reportedBy: issue.reportedBy,
+                phone: issue.phone,
+                description: issue.description,
+                timestamp: issue.timestamp,
+                date: issue.date,
+                resolved: issue.resolved,
+              }))
             );
+          }
 
-            // Update waitlists
-            if (newState.waitlists) {
-              setWaitlists({
-                washers: newState.waitlists.washers || [],
-                dryers: newState.waitlists.dryers || [],
-              });
-            }
+          // Update machine collection status (for 'coming' / 'collected')
+          if (newState.machineCollectionStatus) {
+            const map = new Map<string, { status: 'waiting' | 'coming' | 'collected'; user: string }>();
+            Object.entries(newState.machineCollectionStatus).forEach(([k, v]: any) => {
+              map.set(k, v as { status: 'waiting' | 'coming' | 'collected'; user: string });
+            });
+            setMachineCollectionStatus(map);
+          } else {
+            setMachineCollectionStatus(new Map());
+          }
 
-            // Update reported issues
-            if (newState.reportedIssues) {
-              setReportedIssues(
-                newState.reportedIssues.map((issue: any) => ({
-                  id: issue.id,
-                  type: issue.type || issue.machineType,
-                  machine_id: parseInt(issue.machine_id || issue.machineId),
-                  reportedBy: issue.reportedBy,
-                  phone: issue.phone,
-                  description: issue.description,
-                  timestamp: issue.timestamp,
-                  date: issue.date,
-                  resolved: issue.resolved,
-                }))
-              );
-            }
+          // Update usage history
+          if (newState.usageHistory) {
+            setUsageHistory(
+              newState.usageHistory.map((record: any) => ({
+                id: record.id,
+                type: record.type || record.machineType,
+                machine_id: parseInt(record.machine_id || record.machineId),
+                mode: record.mode,
+                duration: record.duration,
+                date: record.date,
+                day: record.day || '',
+                time: record.time || '',
+                studentId: record.studentId,
+                timestamp: record.timestamp,
+                spending: record.spending || 0,
+                status: record.status || 'completed',
+              }))
+            );
+          }
 
-            // Update machine collection status (for 'coming' / 'collected')
-            if (newState.machineCollectionStatus) {
-              const map = new Map<string, { status: 'waiting' | 'coming' | 'collected'; user: string }>();
-              Object.entries(newState.machineCollectionStatus).forEach(([k, v]: any) => {
-                map.set(k, v as { status: 'waiting' | 'coming' | 'collected'; user: string });
-              });
-              setMachineCollectionStatus(map);
-            } else {
-              setMachineCollectionStatus(new Map());
-            }
-
-            // Update usage history
-            if (newState.usageHistory) {
-              setUsageHistory(
-                newState.usageHistory.map((record: any) => ({
-                  id: record.id,
-                  type: record.type || record.machineType,
-                  machine_id: parseInt(record.machine_id || record.machineId),
-                  mode: record.mode,
-                  duration: record.duration,
-                  date: record.date,
-                  day: record.day || '',
-                  time: record.time || '',
-                  studentId: record.studentId,
-                  timestamp: record.timestamp,
-                  spending: record.spending || 0,
-                  status: record.status || 'completed',
-                }))
-              );
-            }
-
-            // Update users
-            if (newState.users) {
-              setUsers(newState.users);
-            }
+          // Update users
+          if (newState.users) {
+            setUsers(newState.users);
           }
         }
+
+        return result;
       } catch (error) {
         console.error(`Failed to emit ${event}:`, error);
-      }
+        return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+        }
     };
 
     socketRef.current = { emit };
@@ -375,25 +377,12 @@ const KYWashSystem = () => {
         if (response.ok) {
           const newState = await response.json();
 
-          // Update machines from API - be smart about not reverting recent state changes
+          // Update machines from API using the server snapshot as the source of truth.
           setMachines((prevMachines) => {
             return newState.machines.map((m: any) => {
               // Find the previous machine state
               const prevMachine = prevMachines.find((pm) => pm.id === parseInt(m.id) && pm.type === m.type);
-
-              // Protect against polling flipping a pending-collection back to running
-              if (prevMachine?.status === 'pending-collection' && m.status === 'running') {
-                console.warn(`[POLLING PROTECTION] Blocked state revert for ${m.type}-${m.id}: pending-collection → running`);
-                return prevMachine;
-              }
-
-              // Protect local running state from a stale poll that says 'available' (don't stomp a running we started)
-              if (prevMachine?.status === 'running' && m.status === 'available') {
-                console.warn(`[POLLING PROTECTION] Blocked state revert for ${m.type}-${m.id}: running → available`);
-                return prevMachine;
-              }
-
-              // Accept server state for all other cases while preserving an active local cycle.
+              // Keep any missing fields stable, but do not override the server status.
               return mergeMachineSnapshot(prevMachine, m, Date.now());
             });
           });
@@ -559,22 +548,13 @@ const KYWashSystem = () => {
     const prevFinishTimestamp = typeof prevMachine?.finishTimestamp === 'number' ? prevMachine.finishTimestamp : undefined;
     const incomingFinishTimestamp = typeof incomingMachine.finishTimestamp === 'number' ? incomingMachine.finishTimestamp : undefined;
     const finishTimestamp = incomingFinishTimestamp ?? prevFinishTimestamp;
-    const prevRemainingSeconds = prevFinishTimestamp !== undefined
-      ? Math.max(0, Math.ceil((prevFinishTimestamp - now) / 1000))
-      : 0;
-    const preserveActiveCycle = Boolean(
-      prevMachine &&
-      (prevMachine.status === 'running' || prevMachine.status === 'pending-collection') &&
-      prevRemainingSeconds > 0
-    );
-    const status = preserveActiveCycle ? 'running' : incomingStatus;
     const hasLiveValue = (value: unknown): boolean => value !== null && value !== undefined && value !== '';
 
     return {
       id: parseInt(incomingMachine.id),
       type: incomingMachine.type,
-      status,
-      timeLeft: status === 'running'
+      status: incomingStatus,
+      timeLeft: incomingStatus === 'running'
         ? Math.max(0, Math.ceil(((finishTimestamp ?? prevFinishTimestamp ?? now) - now) / 1000))
         : 0,
       mode: hasLiveValue(incomingMachine.mode) ? incomingMachine.mode : prevMachine?.mode ?? null,
@@ -582,7 +562,7 @@ const KYWashSystem = () => {
       userStudentId: hasLiveValue(incomingMachine.userStudentId) ? incomingMachine.userStudentId : prevMachine?.userStudentId ?? null,
       userPhone: hasLiveValue(incomingMachine.userPhone) ? incomingMachine.userPhone : prevMachine?.userPhone ?? null,
       originalDuration: incomingMachine.originalDuration ?? prevMachine?.originalDuration ?? undefined,
-      finishTimestamp: status === 'running' && finishTimestamp !== undefined ? finishTimestamp : undefined,
+      finishTimestamp: incomingStatus === 'running' && finishTimestamp !== undefined ? finishTimestamp : undefined,
     };
   };
 
@@ -1227,7 +1207,7 @@ const KYWashSystem = () => {
     }
   };
 
-  const startMachine = (machineId: number, machineType: 'washer' | 'dryer', mode: Mode): void => {
+  const startMachine = async (machineId: number, machineType: 'washer' | 'dryer', mode: Mode): Promise<void> => {
     if (!user) return;
     if (!stateHydrated) {
       showNotification('Loading live machine state. Please wait a moment and try again.');
@@ -1258,18 +1238,7 @@ const KYWashSystem = () => {
       return;
     }
 
-    // Calculate spending based on mode
-    const spending = getSpendingForMode(mode.name);
-
-    // Get current date and time
-    const now = new Date();
-    const dateStr = now.toLocaleDateString();
-    const timeStr = now.toLocaleTimeString();
-    const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][now.getDay()];
-
-    // Emit to real-time API
-    if (socketRef.current?.emit) {
-      socketRef.current.emit('machine-start', {
+    const result = await socketRef.current?.emit?.('machine-start', {
         machineId: String(machineId),
         machineType: machineType,
         mode: mode.name,
@@ -1277,6 +1246,10 @@ const KYWashSystem = () => {
         studentId: user.studentId,
         phoneNumber: user.phoneNumber,
       });
+    if (!result?.success) {
+      const message = result?.error || 'This machine could not be started. Please try again.';
+      alert(message);
+      return;
     }
 
     const machineKey = `${machineType}-${machineId}`;
@@ -1285,58 +1258,7 @@ const KYWashSystem = () => {
     reminderSentRef.current.delete(machineKey);
     stopContinuousNotificationRing();
 
-    setMachines((prev: Machine[]) => prev.map((machine: Machine) => 
-      machine.id === machineId && machine.type === machineType
-        ? {
-            ...machine,
-            status: 'running',
-            timeLeft: mode.duration * 60,
-            finishTimestamp: Date.now() + mode.duration * 60 * 1000,
-            mode: mode.name,
-            userStudentId: user.studentId,
-            userPhone: user.phoneNumber,
-            originalDuration: mode.duration
-          }
-        : machine
-    ));
-
-    // Sync to Supabase
-    const newHistoryRecord: UsageHistory = {
-      id: `${Date.now()}-${Math.random()}`,
-      type: machineType,
-      machine_id: machineId,
-      mode: mode.name,
-      duration: mode.duration,
-      date: dateStr,
-      day: dayName,
-      time: timeStr,
-      studentId: user.studentId,
-      timestamp: Date.now(),
-      spending: spending,
-      status: 'In Progress'
-    };
-
-    // Add to local history
-    setUsageHistory((prev: UsageHistory[]) => [...prev, newHistoryRecord]);
-
-    // Sync to Supabase
-    insertUsageRecord(
-      {
-        studentid: user.studentId,
-        phone_number: user.phoneNumber,
-        type: machineType,
-        machine_id: machineId,
-        mode: mode.name,
-        duration: mode.duration,
-        spending: spending,
-        status: 'In Progress',
-        date: dateStr,
-        day: dayName,
-        time: timeStr,
-        timestamp: Date.now()
-      }
-    );
-
+    const spending = getSpendingForMode(mode.name);
     showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} started! Phone: ${user.phoneNumber} | Charge: RM${spending}`);
   };
 
