@@ -617,7 +617,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           );
           if (machine) {
             // Stop server timer for this machine
-            stopServerTimer(data.machineId, data.machineType);
+            stopServerTimer(String(data.machineId), data.machineType);
 
             // Mark any in-progress usage history for this machine as cancelled
             state.usageHistory = state.usageHistory.map((h) => {
@@ -626,7 +626,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 (h.machineType === data.machineType || h.type === data.machineType) &&
                 h.status === 'In Progress'
               ) {
-                // Update persisted record status (best-effort)
+                // Best-effort update to Supabase
                 try {
                   updateSupabaseRecordStatus(h.studentId || machine.userStudentId || '', data.machineType, data.machineId, 'cancelled');
                 } catch (err) {
@@ -645,9 +645,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // Reset machine to available and clear user/timer info
             machine.status = 'available';
             machine.timeLeft = 0;
-            machine.mode = '';
-            machine.userStudentId = '';
-            machine.userPhone = '';
+            machine.mode = null;
+            machine.userStudentId = null;
+            machine.userPhone = null;
             machine.finishTimestamp = undefined;
             machine.startedAt = undefined;
 
