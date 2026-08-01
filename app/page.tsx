@@ -911,7 +911,7 @@ const KYWashSystem = () => {
 <<<<<<< HEAD
       if (remainingMs <= 0 && !transitionHandledRef.current.has(machineKey)) {
 =======
-      if (remainingMs <= -1000 && !transitionHandledRef.current.has(machineKey)) {
+      if (remainingMs <= 0 && !transitionHandledRef.current.has(machineKey)) {
 >>>>>>> origin/main
         transitionHandledRef.current.add(machineKey);
 
