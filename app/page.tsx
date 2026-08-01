@@ -818,39 +818,9 @@ const KYWashSystem = () => {
     return Math.max(0, Math.ceil(remainingMs / 1000));
   };
 
-  // Auto-transition running machines to pending-collection when timer expires (synchronized across all clients)
-  useEffect(() => {
-    machines.forEach((machine) => {
-      const machineKey = `${machine.type}-${machine.id}`;
-      if (machine.status !== 'running' || !machine.finishTimestamp) {
-        return;
-      }
-
-      const remainingMs = machine.finishTimestamp - nowTick;
-      // Keep the running card visible through the final visible second so the
-      // countdown reaches 00:00 before switching to collection mode.
-      if (remainingMs <= 0 && !transitionHandledRef.current.has(machineKey)) {
-        transitionHandledRef.current.add(machineKey);
-
-        setMachines((prev) => prev.map((m) =>
-          m.id === machine.id && m.type === machine.type
-            ? { ...m, status: 'pending-collection', timeLeft: 0, finishTimestamp: undefined }
-            : m
-        ));
-
-        if (socketRef.current?.emit) {
-          try {
-            socketRef.current.emit('machine-complete', {
-              machineId: String(machine.id),
-              machineType: machine.type
-            });
-          } catch (err) {
-            console.warn('Failed to emit machine-complete:', err);
-          }
-        }
-      }
-    });
-  }, [nowTick, machines]);
+  // Pending-collection transitions are driven by the server state and API polling.
+  // The local UI countdown still updates from finishTimestamp, but the server
+  // remains authoritative for completion and cross-device sync.
 
   // Monitor for completion and trigger notifications with alarm sound
   useEffect(() => {

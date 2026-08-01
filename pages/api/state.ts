@@ -794,9 +794,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           );
 
           if (machine && machine.status === 'running') {
+            const now = Date.now();
+            const finishTimestamp = typeof machine.finishTimestamp === 'number' ? machine.finishTimestamp : undefined;
+            const startTime = machineStartTimes.get(`${machine.type}-${machine.id}`);
+            const originalDuration = typeof machine.originalDuration === 'number' ? machine.originalDuration : undefined;
+
+            let canonicalFinish = finishTimestamp;
+            if (canonicalFinish === undefined && startTime !== undefined && originalDuration !== undefined) {
+              canonicalFinish = startTime + originalDuration * 60 * 1000;
+            }
+
+            const remainingMs = canonicalFinish !== undefined
+              ? canonicalFinish - now
+              : (typeof machine.timeLeft === 'number' ? machine.timeLeft * 1000 : Number.POSITIVE_INFINITY);
+
+            if (remainingMs > 1000) {
+              // Reject premature completion events from clients. The server will
+              // transition the machine to pending-collection when the timer truly expires.
+              break;
+            }
+
             machine.status = 'pending-collection';
             machine.timeLeft = 0;
-            machine.finishTimestamp = machine.finishTimestamp || Date.now();
+            machine.finishTimestamp = canonicalFinish ?? now;
             stopServerTimer(String(data.machineId), data.machineType);
 
             const historyRecord = state.usageHistory.find((h: any) =>
