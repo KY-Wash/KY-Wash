@@ -773,21 +773,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         case 'timer-tick': {
-          // Client-side timer tick - acknowledge but don't override server timer
-          // Server timer is the source of truth
+          // Client-side timer tick - acknowledge but do NOT allow client to stop the server timer
+          // Server timer (globalServerTimer + tickServerTimers) is authoritative for transitions
           const machine = state.machines.find(
             (m) => m.id === data.machineId && m.type === data.machineType
           );
           if (machine && machine.status === 'running') {
-            // Only accept if it matches server state (within 1 second tolerance)
-            if (Math.abs(machine.timeLeft - data.timeLeft) <= 1) {
+            // Accept small differences from the client for smoother UI, but don't let the client
+            // force a status change or stop the server timer. Server will handle completion.
+            if (Math.abs(machine.timeLeft - data.timeLeft) <= 3) {
               machine.timeLeft = Math.max(0, data.timeLeft);
-            }
-            
-            // If timer reached 0, mark as pending-collection
-            if (machine.timeLeft === 0) {
-              machine.status = 'pending-collection';
-              stopServerTimer(data.machineId, data.machineType);
             }
           }
           break;
