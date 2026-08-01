@@ -611,62 +611,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           break;
         }
 
-        case 'machine-cancel-by-other': {
-          const machine = state.machines.find(
-            (m) => m.id === data.machineId && m.type === data.machineType
-          );
-          if (machine) {
-            // Stop server timer for this machine
-            stopServerTimer(String(data.machineId), data.machineType);
-
-            // Mark any in-progress usage history for this machine as cancelled
-            state.usageHistory = state.usageHistory.map((h) => {
-              if (
-                (h.machineId === data.machineId || String(h.machineId) === String(data.machineId)) &&
-                (h.machineType === data.machineType || h.type === data.machineType) &&
-                h.status === 'In Progress'
-              ) {
-                // Best-effort update to Supabase
-                try {
-                  updateSupabaseRecordStatus(h.studentId || machine.userStudentId || '', data.machineType, data.machineId, 'cancelled');
-                } catch (err) {
-                  console.warn('Failed to update supabase for cancel-by-other:', err);
-                }
-
-                return {
-                  ...h,
-                  status: 'cancelled',
-                  spending: 0,
-                };
-              }
-              return h;
-            });
-
-            // Reset machine to available and clear user/timer info
-            machine.status = 'available';
-            machine.timeLeft = 0;
-            machine.mode = null;
-            machine.userStudentId = null;
-            machine.userPhone = null;
-            machine.finishTimestamp = undefined;
-            machine.startedAt = undefined;
-
-            // Persist machine reset and audit log asynchronously
-            (async () => {
-              try {
-                const svc = getServiceSupabaseClient();
-                if (svc) {
-                  await svc.from('machines').update({ status: 'available', time_left: 0, user_id: null, mode: null, finish_timestamp: null, original_duration: null }).match({ type: data.machineType, id: data.machineId });
-                  await svc.from('audit_logs').insert([{ action: 'cycle-cancelled', machine_type: data.machineType, machine_id: data.machineId, initiated_by: data.studentId || null, timestamp: Date.now() }]);
-                }
-              } catch (err) {
-                console.error('Failed to persist cancel-by-other to Supabase:', err);
-              }
-            })();
-          }
-          break;
-        }
-
         case 'waitlist-join': {
           const waitlistKey = data.machineType === 'washer' ? 'washers' : 'dryers';
           if (!state.waitlists[waitlistKey].some((entry) => entry.studentId === data.studentId)) {
