@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { machineStartTimes, tickServerTimers, recoverStartTimes, computeStateForClient, rehydrateActiveCycles, startServerTimer, stopServerTimer } from '../lib/serverTimers';
+import { machineStartTimes, tickServerTimers, recoverStartTimes, computeStateForClient, rehydrateActiveCycles, startServerTimer, stopServerTimer, mergeMachineRuntimeSnapshot } from '../lib/serverTimers';
 
 describe('serverTimers', () => {
   beforeEach(() => {
@@ -72,6 +72,28 @@ describe('serverTimers', () => {
     const clientState = computeStateForClient(state, now);
     expect(clientState.machines[0].finishTimestamp).toBe(now + 5_000);
     expect(clientState.machines[0].finishTimestamp! - now).toBe(5_000);
+  });
+
+  it('preserves a running countdown when a partial snapshot arrives without a finish timestamp', () => {
+    const now = Date.now();
+    const prevMachine = {
+      status: 'running',
+      finishTimestamp: now + 45_000,
+      timeLeft: 45,
+      userStudentId: 'x',
+    };
+    const incomingMachine = {
+      status: 'available',
+      finishTimestamp: undefined,
+      timeLeft: 0,
+      userStudentId: '',
+    };
+
+    const merged = mergeMachineRuntimeSnapshot(prevMachine, incomingMachine, now);
+
+    expect(merged.status).toBe('running');
+    expect(merged.finishTimestamp).toBe(prevMachine.finishTimestamp);
+    expect(merged.timeLeft).toBe(45);
   });
 
   it('tickServerTimers decrements and transitions to pending-collection', () => {

@@ -5,6 +5,7 @@ import { Waves, Loader2, Clock, Users, AlertCircle, LogOut, Settings, ChevronDow
 import Image from 'next/image';
 import { updateUsageRecordStatus, supabase } from '@/lib/supabase';
 import { buildMachineCollectionKey, getCollectionActionState } from '@/lib/machineCollectionFlow';
+import { mergeMachineRuntimeSnapshot } from '@/lib/serverTimers';
 
 interface User {
   studentId: string;
@@ -546,25 +547,20 @@ const KYWashSystem = () => {
     incomingMachine: any,
     now: number
   ): Machine => {
-    const incomingStatus = incomingMachine.status as Machine['status'];
-    const prevFinishTimestamp = typeof prevMachine?.finishTimestamp === 'number' ? prevMachine.finishTimestamp : undefined;
-    const incomingFinishTimestamp = typeof incomingMachine.finishTimestamp === 'number' ? incomingMachine.finishTimestamp : undefined;
-    const finishTimestamp = incomingFinishTimestamp ?? prevFinishTimestamp;
+    const mergedSnapshot = mergeMachineRuntimeSnapshot(prevMachine, incomingMachine, now);
     const hasLiveValue = (value: unknown): boolean => value !== null && value !== undefined && value !== '';
 
     return {
       id: parseInt(incomingMachine.id),
       type: incomingMachine.type,
-      status: incomingStatus,
-      timeLeft: incomingStatus === 'running'
-        ? Math.max(0, Math.ceil(((finishTimestamp ?? prevFinishTimestamp ?? now) - now) / 1000))
-        : 0,
+      status: mergedSnapshot.status as Machine['status'],
+      timeLeft: mergedSnapshot.timeLeft,
       mode: hasLiveValue(incomingMachine.mode) ? incomingMachine.mode : prevMachine?.mode ?? null,
       locked: incomingMachine.locked,
       userStudentId: hasLiveValue(incomingMachine.userStudentId) ? incomingMachine.userStudentId : prevMachine?.userStudentId ?? null,
       userPhone: hasLiveValue(incomingMachine.userPhone) ? incomingMachine.userPhone : prevMachine?.userPhone ?? null,
       originalDuration: incomingMachine.originalDuration ?? prevMachine?.originalDuration ?? undefined,
-      finishTimestamp: incomingStatus === 'running' && finishTimestamp !== undefined ? finishTimestamp : undefined,
+      finishTimestamp: mergedSnapshot.finishTimestamp,
     };
   };
 

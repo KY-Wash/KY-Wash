@@ -182,6 +182,41 @@ export function computeStateForClient(state: any, now = Date.now()) {
   return { ...state, machines };
 }
 
+export function mergeMachineRuntimeSnapshot(prevMachine: any, incomingMachine: any, now = Date.now()) {
+  const incomingStatus = incomingMachine?.status;
+  const prevStatus = prevMachine?.status;
+  const prevFinishTimestamp = typeof prevMachine?.finishTimestamp === 'number' ? prevMachine.finishTimestamp : undefined;
+  const incomingFinishTimestamp = typeof incomingMachine?.finishTimestamp === 'number' ? incomingMachine.finishTimestamp : undefined;
+
+  const preserveRunningState = prevStatus === 'running'
+    && typeof prevFinishTimestamp === 'number'
+    && incomingStatus !== 'pending-collection'
+    && incomingStatus !== 'maintenance'
+    && typeof incomingFinishTimestamp !== 'number';
+
+  const finishTimestamp = preserveRunningState
+    ? prevFinishTimestamp
+    : (incomingFinishTimestamp ?? prevFinishTimestamp);
+
+  let status = incomingStatus;
+  if (preserveRunningState) {
+    status = 'running';
+  } else if (incomingStatus === 'running' && typeof finishTimestamp === 'number' && finishTimestamp <= now) {
+    status = 'pending-collection';
+  }
+
+  const timeLeft = status === 'running' && typeof finishTimestamp === 'number'
+    ? Math.max(0, Math.ceil((finishTimestamp - now) / 1000))
+    : 0;
+
+  return {
+    ...incomingMachine,
+    status,
+    timeLeft,
+    finishTimestamp: status === 'running' && typeof finishTimestamp === 'number' ? finishTimestamp : undefined,
+  };
+}
+
 // Pure function to perform one server tick; returns true if state changed
 export function tickServerTimers(state: any, now = Date.now()): boolean {
   let stateChanged = false;

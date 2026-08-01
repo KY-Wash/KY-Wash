@@ -411,8 +411,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const state = getAppState();
+    const now = Date.now();
 
-    if (rehydrateActiveCycles(state, Date.now())) {
+    if (rehydrateActiveCycles(state, now)) {
+      updateAppState(state);
+      void syncMachinesToSupabase(state);
+    }
+
+    if (tickServerTimers(state, now)) {
       updateAppState(state);
       void syncMachinesToSupabase(state);
     }
