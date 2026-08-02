@@ -190,7 +190,8 @@ export function mergeMachineRuntimeSnapshot(prevMachine: any, incomingMachine: a
 
   const preserveRunningState = prevStatus === 'running'
     && typeof prevFinishTimestamp === 'number'
-    && incomingStatus === 'running'
+    && incomingStatus !== 'pending-collection'
+    && incomingStatus !== 'maintenance'
     && typeof incomingFinishTimestamp !== 'number';
 
   const finishTimestamp = preserveRunningState

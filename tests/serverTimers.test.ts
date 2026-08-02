@@ -83,7 +83,7 @@ describe('serverTimers', () => {
       userStudentId: 'x',
     };
     const incomingMachine = {
-      status: 'running',
+      status: 'available',
       finishTimestamp: undefined,
       timeLeft: 0,
       userStudentId: '',
@@ -94,29 +94,6 @@ describe('serverTimers', () => {
     expect(merged.status).toBe('running');
     expect(merged.finishTimestamp).toBe(prevMachine.finishTimestamp);
     expect(merged.timeLeft).toBe(45);
-  });
-
-  it('drops a running countdown when server snapshot says available', () => {
-    const now = Date.now();
-    const prevMachine = {
-      status: 'running',
-      finishTimestamp: now + 45_000,
-      timeLeft: 45,
-      userStudentId: 'x',
-    };
-    const incomingMachine = {
-      status: 'available',
-      finishTimestamp: undefined,
-      timeLeft: 0,
-      userStudentId: '',
-    };
-
-    // For server snapshots that explicitly mark machine available, the client should not preserve running state.
-    const merged = mergeMachineRuntimeSnapshot(prevMachine, { ...incomingMachine, status: 'available' }, now);
-
-    expect(merged.status).toBe('available');
-    expect(merged.finishTimestamp).toBeUndefined();
-    expect(merged.timeLeft).toBe(0);
   });
 
   it('tickServerTimers decrements and transitions to pending-collection', () => {
