@@ -1268,35 +1268,44 @@ const KYWashSystem = () => {
     showNotification('Machine cancelled. Spending not recorded.');
   };
 
-  const handleMachineCollectionStatus = (machineId: number, machineType: 'washer' | 'dryer', status: 'coming' | 'collected'): void => {
+  const handleMachineCollectionStatus = async (machineId: number, machineType: 'washer' | 'dryer', status: 'coming' | 'collected'): Promise<void> => {
     if (!user) return;
 
     const machineKey = `${machineType}-${machineId}`;
 
     if (status === 'coming') {
-      // Mark in-progress that someone is coming to collect but DON'T free the machine yet
-      setMachineCollectionStatus((prev) => {
-        const updated = new Map(prev);
-        updated.set(machineKey, { status: 'coming', user: user.studentId });
-        return updated;
-      });
-
-      // Log audit event
-      logAuditEvent('clothes-collected', machineType, machineId, `User ${user.studentId} is coming to collect clothes`);
-
       // Emit to server so others see it
-      if (socketRef.current?.emit) {
-        socketRef.current.emit('machine-collection-status', {
+      const result = await socketRef.current?.emit?.('machine-collection-status', {
           machineId: String(machineId),
           machineType: machineType,
           status: 'coming',
           studentId: user.studentId,
         });
+      if (!result?.success) {
+        showNotification(result?.error || 'Unable to mark clothes as on the way.');
+        return;
       }
 
+      setMachineCollectionStatus((prev) => {
+        const updated = new Map(prev);
+        updated.set(machineKey, { status: 'coming', user: user.studentId });
+        return updated;
+      });
+      logAuditEvent('clothes-collected', machineType, machineId, `User ${user.studentId} is coming to collect clothes`);
       showNotification(`${user.studentId} is coming to collect clothes from ${machineType} ${machineId}`);
     } else if (status === 'collected') {
       const machineKey = `${machineType}-${machineId}`;
+      const result = await socketRef.current?.emit?.('machine-collection-status', {
+        machineId: String(machineId),
+        machineType: machineType,
+        status: 'collected',
+        studentId: user.studentId,
+      });
+      if (!result?.success) {
+        showNotification(result?.error || 'Unable to mark clothes as collected.');
+        return;
+      }
+
       transitionHandledRef.current.delete(machineKey);
       notifiedMachinesRef.current.delete(machineKey);
       reminderSentRef.current.delete(machineKey);
@@ -1326,16 +1335,6 @@ const KYWashSystem = () => {
 
       // Log audit event for clothes collected
       logAuditEvent('clothes-collected', machineType, machineId, `User ${user.studentId} marked clothes as collected`);
-
-      // Emit to real-time API (server will mark usage completed and free machine globally)
-      if (socketRef.current?.emit) {
-        socketRef.current.emit('machine-collection-status', {
-          machineId: String(machineId),
-          machineType: machineType,
-          status: 'collected',
-          studentId: user.studentId,
-        });
-      }
 
       showNotification(`${machineType.charAt(0).toUpperCase() + machineType.slice(1)} ${machineId} marked as collected.`);
     }
@@ -3498,6 +3497,11 @@ const KYWashSystem = () => {
 
                             return (
                               <div className="space-y-2 mt-2">
+                                {collectionState.showPendingNotice && (
+                                  <p className={`rounded-lg px-3 py-2 text-sm font-semibold ${darkMode ? 'bg-yellow-900/50 text-yellow-200' : 'bg-yellow-100 text-yellow-800'}`}>
+                                    {collectionState.pendingNotice}
+                                  </p>
+                                )}
                                 {collectionState.showOnTheWay && (
                                   <button
                                     onClick={(e) => {
@@ -3644,6 +3648,11 @@ const KYWashSystem = () => {
 
                             return (
                               <div className="space-y-2 mt-2">
+                                {collectionState.showPendingNotice && (
+                                  <p className={`rounded-lg px-3 py-2 text-sm font-semibold ${darkMode ? 'bg-yellow-900/50 text-yellow-200' : 'bg-yellow-100 text-yellow-800'}`}>
+                                    {collectionState.pendingNotice}
+                                  </p>
+                                )}
                                 {collectionState.showOnTheWay && (
                                   <button
                                     onClick={(e) => {

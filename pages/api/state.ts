@@ -75,14 +75,15 @@ async function seedStateFromSupabase() {
     return;
   }
 
-  const [chatResult, feedbackResult, foundersResult, auditResult, waitlistResult, machinesResult, usageResult] = await Promise.all([
+  const [chatResult, feedbackResult, foundersResult, auditResult, waitlistResult, machinesResult, usageResult, usersResult] = await Promise.all([
     svc.from('community_chat').select('*').order('created_at', { ascending: true }).limit(100),
     svc.from('feedback_issues').select('*').order('created_at', { ascending: true }).limit(200),
     svc.from('founders').select('*').order('created_at', { ascending: true }).limit(200),
     svc.from('audit_logs').select('*').order('created_at', { ascending: true }).limit(500),
     svc.from('waitlist_entries').select('student_id,phone,machine_type,created_at').order('created_at', { ascending: true }),
-    svc.from('machines').select('id,type,status,time_left,mode,locked,original_duration,finish_timestamp,started_at,target_end_time,updated_at').order('updated_at', { ascending: true }),
+    svc.from('machines').select('id,type,status,time_left,mode,locked,user_id,original_duration,finish_timestamp,started_at,target_end_time,updated_at').order('updated_at', { ascending: true }),
     svc.from('usage_history').select('id,student_id,type,machine_id,mode,duration,spending,status,date,timestamp,created_at').order('timestamp', { ascending: true }),
+    svc.from('users').select('id,student_id,phone_number'),
   ]);
 
   const state = getAppState();
@@ -151,6 +152,9 @@ async function seedStateFromSupabase() {
 
   if (!machinesResult.error && machinesResult.data && machinesResult.data.length > 0) {
     const now = Date.now();
+    const usersById = new Map<string, any>(
+      (!usersResult.error && usersResult.data ? usersResult.data : []).map((user: any) => [user.id, user])
+    );
     const usageByMachine = new Map<string, any>();
     for (const record of state.usageHistory as any[]) {
       if (record.status === 'In Progress') {
@@ -194,8 +198,8 @@ async function seedStateFromSupabase() {
         timeLeft: status === 'running' ? timeLeft : 0,
         mode: row.mode || null,
         locked: !!row.locked,
-        userStudentId: runningRecord?.studentId || existing.userStudentId || null,
-        userPhone: existing.userPhone || null,
+        userStudentId: runningRecord?.studentId || usersById.get(row.user_id)?.student_id || existing.userStudentId || null,
+        userPhone: usersById.get(row.user_id)?.phone_number || existing.userPhone || null,
         originalDuration: row.original_duration || undefined,
         finishTimestamp: status === 'running' && typeof row.finish_timestamp === 'number' ? row.finish_timestamp : undefined,
         startedAt: row.started_at || (runningRecord?.timestamp ? new Date(runningRecord.timestamp).toISOString() : undefined),
@@ -909,6 +913,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           const machine = state.machines.find(
             (m) => String(m.id) === String(data.machineId) && m.type === data.machineType
           );
+          if (!machine) {
+            return res.status(404).json({ success: false, error: 'Machine not found' });
+          }
+          if (machine.status !== 'pending-collection') {
+            return res.status(409).json({ success: false, error: 'Machine is not pending collection.' });
+          }
+          if (machine.userStudentId !== data.studentId) {
+            return res.status(403).json({ success: false, error: 'Only the user who started this cycle can collect these clothes.' });
+          }
           if (machine && machine.status === 'pending-collection') {
             state.stats.totalWashes += 1;
 
@@ -1138,6 +1151,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           if (!state.machineCollectionStatus) state.machineCollectionStatus = {};
 
           if (status === 'coming') {
+            if (!machine) {
+              return res.status(404).json({ success: false, error: 'Machine not found' });
+            }
+            if (machine.status !== 'pending-collection') {
+              return res.status(409).json({ success: false, error: 'Machine is not pending collection.' });
+            }
+            if (machine.userStudentId !== studentId) {
+              return res.status(403).json({ success: false, error: 'Only the user who started this cycle can mark it as on the way.' });
+            }
             if (machine && machine.status === 'pending-collection') {
               state.machineCollectionStatus[key] = { status: 'coming', user: studentId };
             }
@@ -1156,6 +1178,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             })();
 
           } else if (status === 'collected') {
+            if (!machine) {
+              return res.status(404).json({ success: false, error: 'Machine not found' });
+            }
+            if (machine.status !== 'pending-collection') {
+              return res.status(409).json({ success: false, error: 'Machine is not pending collection.' });
+            }
+            if (machine.userStudentId !== studentId) {
+              return res.status(403).json({ success: false, error: 'Only the user who started this cycle can collect these clothes.' });
+            }
             if (machine && machine.status === 'pending-collection') {
               const historyRecord = state.usageHistory.find((h: any) => h.machineType === machineType && h.machineId === String(machineId) && h.status === 'In Progress');
               if (historyRecord) historyRecord.status = 'Completed';

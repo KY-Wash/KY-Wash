@@ -42,7 +42,7 @@ export function getCollectionActionState(
 
   if (startedByCurrentUser) {
     return {
-      showOnTheWay: true,
+      showOnTheWay: effectiveCollectionState?.status !== 'coming',
       showClothesCollected: true,
       showPendingNotice: false,
       pendingNotice: '',
@@ -51,8 +51,8 @@ export function getCollectionActionState(
 
   if (effectiveCollectionState?.status === 'coming') {
     return {
-      showOnTheWay: true,
-      showClothesCollected: true,
+      showOnTheWay: false,
+      showClothesCollected: false,
       showPendingNotice: true,
       pendingNotice: pendingUser
         ? `${pendingUser} is on the way to collect clothes.`
@@ -98,11 +98,13 @@ export function applyMachineCollectionUpdate(
   const machine = state.machines?.find((m) => String(m.id) === String(data.machineId) && m.type === data.machineType);
 
   if (data.status === 'coming') {
-    state.machineCollectionStatus[key] = { status: 'coming', user: data.studentId || '' };
+    if (machine && machine.userStudentId === data.studentId) {
+      state.machineCollectionStatus[key] = { status: 'coming', user: data.studentId || '' };
+    }
     return { key, machine, status: 'coming' };
   }
 
-  if (machine) {
+    if (machine && machine.userStudentId === data.studentId) {
     machine.status = 'available';
     machine.timeLeft = 0;
     machine.mode = '';
