@@ -158,6 +158,28 @@ describe('serverTimers', () => {
     expect(state.usageHistory[0].status).toBe('Completed');
   });
 
+  it('anchors a timeLeft-only cycle so later ticks cannot extend it', () => {
+    const start = 2_200_000_000_000;
+    const state: any = {
+      machines: [
+        { id: 10, type: 'dryer', status: 'running', timeLeft: 10, userStudentId: 'u10' }
+      ],
+      usageHistory: [
+        { id: 'h10', studentId: 'u10', machineType: 'dryer', machineId: 10, status: 'In Progress' }
+      ]
+    };
+
+    tickServerTimers(state, start);
+    expect(state.machines[0].finishTimestamp).toBe(start + 10_000);
+
+    tickServerTimers(state, start + 5_000);
+    expect(state.machines[0].timeLeft).toBe(5);
+
+    tickServerTimers(state, start + 11_000);
+    expect(state.machines[0].status).toBe('pending-collection');
+    expect(state.usageHistory[0].status).toBe('Completed');
+  });
+
   it('recoverStartTimes reconstructs start time from originalDuration and timeLeft', () => {
     const now = Date.now();
     const state: any = {

@@ -233,6 +233,8 @@ export function tickServerTimers(state: any, now = Date.now()): boolean {
 
       if (finishTimestamp === undefined && typeof machine.timeLeft === 'number' && machine.timeLeft > 0) {
         finishTimestamp = now + machine.timeLeft * 1000;
+        machine.finishTimestamp = finishTimestamp;
+        stateChanged = true;
       }
 
       if (finishTimestamp !== undefined) {

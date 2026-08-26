@@ -299,7 +299,7 @@ function recordCompletedWasherCycle(state: any, machine: any) {
     h.studentId === machine.userStudentId &&
     h.machineType === machine.type &&
     h.machineId === machine.id &&
-    h.status === 'In Progress'
+    (h.status === 'In Progress' || h.status === 'Completed')
   );
 
   if (!historyRecord || historyRecord.analyticsLogged) {
@@ -321,6 +321,37 @@ function recordCompletedWasherCycle(state: any, machine: any) {
   purgeOldWasherCycles();
 }
 
+async function persistCompletedMachineTransitions(state: any) {
+  const completedMachines = (state.machines || []).filter(
+    (machine: any) => machine.status === 'pending-collection'
+  );
+
+  if (completedMachines.length === 0) {
+    return;
+  }
+
+  const svc = getServiceSupabaseClient();
+  await Promise.all(completedMachines.map(async (machine: any) => {
+    if (machine.userStudentId) {
+      await updateSupabaseRecordStatus(machine.userStudentId, machine.type, machine.id, 'Completed');
+    }
+
+    recordCompletedWasherCycle(state, machine);
+
+    if (svc) {
+      const { error } = await svc.from('machines').update({
+        status: 'pending-collection',
+        time_left: 0,
+        finish_timestamp: machine.finishTimestamp ?? Date.now(),
+      }).match({ type: machine.type, id: machine.id });
+
+      if (error) {
+        console.error('Failed to persist completed machine state to Supabase:', error);
+      }
+    }
+  }));
+}
+
 // Helper function to sync usage record to Supabase
 async function syncUsageRecordToSupabase(record: any) {
   try {
@@ -340,7 +371,7 @@ async function syncUsageRecordToSupabase(record: any) {
         'apikey': supabaseAnonKey,
       },
       body: JSON.stringify({
-        studentid: record.studentId,
+        student_id: record.studentId,
         phone_number: record.phoneNumber || '',
         type: record.machineType,
         machine_id: record.machineId,
@@ -376,7 +407,7 @@ async function updateSupabaseRecordStatus(studentId: string, machineType: string
 
     // Build query to find and update the record
     const response = await fetch(
-      `${supabaseUrl}/rest/v1/usage_history?studentid=eq.${studentId}&type=eq.${machineType}&machine_id=eq.${machineId}&status=eq.In%20Progress`,
+      `${supabaseUrl}/rest/v1/usage_history?student_id=eq.${encodeURIComponent(studentId)}&type=eq.${encodeURIComponent(machineType)}&machine_id=eq.${machineId}&status=eq.In%20Progress`,
       {
         method: 'PATCH',
         headers: {
@@ -415,20 +446,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     if (rehydrateActiveCycles(state, now)) {
       updateAppState(state);
-      void syncMachinesToSupabase(state);
     }
 
     if (tickServerTimers(state, now)) {
       updateAppState(state);
-      void syncMachinesToSupabase(state);
     }
+
+    await persistCompletedMachineTransitions(state);
+    void syncMachinesToSupabase(state);
 
     if (req.method === 'GET') {
       const changed = tickServerTimers(state, Date.now());
       if (changed) {
         updateAppState(state);
-        void syncMachinesToSupabase(state);
       }
+      await persistCompletedMachineTransitions(state);
+      if (changed) void syncMachinesToSupabase(state);
       // GET - Return current state (include computed finishTimestamp for running machines)
       const stateForClient = computeStateForClient(state);
       res.status(200).json(stateForClient);
@@ -438,7 +471,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       if (rehydrateActiveCycles(state, Date.now())) {
         updateAppState(state);
-        void syncMachinesToSupabase(state);
       }
 
       if (!event) {
@@ -1259,6 +1291,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       tickServerTimers(state, Date.now());
       updateAppState(state);
+      await persistCompletedMachineTransitions(state);
       void syncMachinesToSupabase(state);
       // Include computed finish timestamps in the returned state so clients can stay synchronized
       const stateForClient = computeStateForClient(state);
