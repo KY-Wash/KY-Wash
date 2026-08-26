@@ -56,6 +56,8 @@ async function syncMachinesToSupabase(state: any) {
             locked: !!machine.locked,
             original_duration: machine.originalDuration ?? null,
             finish_timestamp: machine.finishTimestamp ?? null,
+            started_at: machine.startedAt ?? null,
+            target_end_time: machine.targetEndTime ?? null,
             updated_at: new Date().toISOString(),
           },
         ], { onConflict: 'type,id' });
@@ -79,7 +81,7 @@ async function seedStateFromSupabase() {
     svc.from('founders').select('*').order('created_at', { ascending: true }).limit(200),
     svc.from('audit_logs').select('*').order('created_at', { ascending: true }).limit(500),
     svc.from('waitlist_entries').select('student_id,phone,machine_type,created_at').order('created_at', { ascending: true }),
-    svc.from('machines').select('id,type,status,time_left,mode,locked,original_duration,finish_timestamp,updated_at').order('updated_at', { ascending: true }),
+    svc.from('machines').select('id,type,status,time_left,mode,locked,original_duration,finish_timestamp,started_at,target_end_time,updated_at').order('updated_at', { ascending: true }),
     svc.from('usage_history').select('id,student_id,type,machine_id,mode,duration,spending,status,date,timestamp,created_at').order('timestamp', { ascending: true }),
   ]);
 
@@ -171,7 +173,9 @@ async function seedStateFromSupabase() {
         userPhone: '',
       };
 
-      const finishTimestamp = typeof row.finish_timestamp === 'number' ? row.finish_timestamp : undefined;
+      const finishTimestamp = row.finish_timestamp !== null && row.finish_timestamp !== undefined
+        ? Number(row.finish_timestamp)
+        : undefined;
       const runningRecord = usageByMachine.get(key);
       let status = row.status || existing.status;
       let timeLeft = typeof row.time_left === 'number' ? row.time_left : existing.timeLeft || 0;
@@ -194,7 +198,8 @@ async function seedStateFromSupabase() {
         userPhone: existing.userPhone || null,
         originalDuration: row.original_duration || undefined,
         finishTimestamp: status === 'running' && typeof row.finish_timestamp === 'number' ? row.finish_timestamp : undefined,
-        startedAt: runningRecord?.timestamp || undefined,
+        startedAt: row.started_at || (runningRecord?.timestamp ? new Date(runningRecord.timestamp).toISOString() : undefined),
+        targetEndTime: row.target_end_time || (status === 'running' && finishTimestamp !== undefined ? new Date(finishTimestamp).toISOString() : undefined),
       };
     });
   }
@@ -513,7 +518,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             machine.finishTimestamp = now.getTime() + durationInSeconds * 1000;
             machine.userStudentId = data.studentId;
             machine.userPhone = data.phoneNumber;
-            machine.startedAt = now.getTime();
+            machine.startedAt = now.toISOString();
+            machine.targetEndTime = new Date(machine.finishTimestamp).toISOString();
             
             // Calculate spending (both washers and dryers charge same: Normal=5, Extra=6)
             const spending = data.mode === 'Normal' ? 5 : data.mode.includes('Extra') ? 6 : 0;
@@ -568,6 +574,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                       user_id: userUuid,
                       original_duration: data.duration,
                       finish_timestamp: machine.finishTimestamp,
+                      started_at: machine.startedAt,
+                      target_end_time: machine.targetEndTime,
                     }
                   ], { onConflict: 'type,id' });
                 }
@@ -630,7 +638,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               phoneNumber: data.phoneNumber,
               mode: machine.mode || '',
               durationMinutes: machine.originalDuration || data.duration,
-              startTime: machine.startedAt || Date.now(),
+              startTime: typeof machine.startedAt === 'string' ? Date.parse(machine.startedAt) : Date.now(),
               status: 'cancelled',
             });
 
@@ -875,7 +883,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               phoneNumber: machine.userPhone || '',
               mode: machine.mode || '',
               durationMinutes: machine.originalDuration || data.duration,
-              startTime: machine.startedAt || Date.now(),
+              startTime: typeof machine.startedAt === 'string' ? Date.parse(machine.startedAt) : Date.now(),
               status: 'completed',
             });
 

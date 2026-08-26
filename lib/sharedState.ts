@@ -36,7 +36,8 @@ export interface Machine {
   userStudentId: string;
   userPhone: string;
   originalDuration?: number;
-  startedAt?: number;
+  startedAt?: string;
+  targetEndTime?: string;
   // Optional canonical finish timestamp (set by server for synchronization)
   finishTimestamp?: number;
 }

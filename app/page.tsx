@@ -6,6 +6,7 @@ import Image from 'next/image';
 import { updateUsageRecordStatus, supabase } from '@/lib/supabase';
 import { buildMachineCollectionKey, getCollectionActionState } from '@/lib/machineCollectionFlow';
 import { mergeMachineRuntimeSnapshot } from '@/lib/serverTimers';
+import { useWashingTimer } from '@/hooks/useWashingTimer';
 
 interface User {
   studentId: string;
@@ -23,6 +24,8 @@ interface Machine {
   userStudentId: string | null;
   userPhone: string | null;
   originalDuration?: number;
+  startedAt?: string;
+  targetEndTime?: string;
   cancellable?: boolean;
   collectionStatus?: 'waiting' | 'coming' | null;
   finishTimestamp?: number; // Unix timestamp when cycle will complete (for synchronized timer)
@@ -117,6 +120,8 @@ const MACHINE_TIMER_STORAGE_KEY = 'kyWashMachineTimers';
 
 interface PersistedMachineTimerSnapshot {
   finishTimestamp: number;
+  startedAt?: string;
+  targetEndTime?: string;
   mode?: string | null;
   userStudentId?: string | null;
   userPhone?: string | null;
@@ -493,6 +498,8 @@ const KYWashSystem = () => {
             status: 'running',
             timeLeft: Math.max(0, Math.ceil((finishTimestamp.finishTimestamp - now) / 1000)),
             finishTimestamp: finishTimestamp.finishTimestamp,
+            startedAt: finishTimestamp.startedAt ?? machine.startedAt,
+            targetEndTime: finishTimestamp.targetEndTime ?? new Date(finishTimestamp.finishTimestamp).toISOString(),
             mode: finishTimestamp.mode ?? machine.mode ?? null,
             userStudentId: finishTimestamp.userStudentId ?? machine.userStudentId ?? null,
             userPhone: finishTimestamp.userPhone ?? machine.userPhone ?? null,
@@ -517,6 +524,8 @@ const KYWashSystem = () => {
       if (machine.status === 'running' && typeof machine.finishTimestamp === 'number') {
         persistedTimers[getMachineTimerKey(machine.type, machine.id)] = {
           finishTimestamp: machine.finishTimestamp,
+          startedAt: machine.startedAt,
+          targetEndTime: machine.targetEndTime,
           mode: machine.mode,
           userStudentId: machine.userStudentId,
           userPhone: machine.userPhone,
@@ -535,12 +544,13 @@ const KYWashSystem = () => {
 
   // Replace per-machine decrement with a single tick that computes remaining time from finishTimestamp.
   // This avoids drift, prevents polling from stomping local timers, and centralizes completion handling.
-  const [nowTick, setNowTick] = useState<number>(Date.now());
-
-  useEffect(() => {
-    const interval = setInterval(() => setNowTick(Date.now()), 250);
-    return () => clearInterval(interval);
-  }, []);
+  const timerTargets = Object.fromEntries(
+    machines.map((machine) => [
+      getMachineTimerKey(machine.type, machine.id),
+      machine.targetEndTime ?? machine.finishTimestamp,
+    ])
+  );
+  const remainingWashingSeconds = useWashingTimer(timerTargets);
 
   const mergeMachineSnapshot = (
     prevMachine: Machine | undefined,
@@ -561,6 +571,9 @@ const KYWashSystem = () => {
       userPhone: hasLiveValue(incomingMachine.userPhone) ? incomingMachine.userPhone : prevMachine?.userPhone ?? null,
       originalDuration: incomingMachine.originalDuration ?? prevMachine?.originalDuration ?? undefined,
       finishTimestamp: mergedSnapshot.finishTimestamp,
+      startedAt: incomingMachine.startedAt ?? prevMachine?.startedAt,
+      targetEndTime: incomingMachine.targetEndTime ?? prevMachine?.targetEndTime
+        ?? (mergedSnapshot.finishTimestamp ? new Date(mergedSnapshot.finishTimestamp).toISOString() : undefined),
     };
   };
 
@@ -810,8 +823,7 @@ const KYWashSystem = () => {
       return Math.max(0, Math.floor((machine.timeLeft || 0)));
     }
 
-    const remainingMs = Math.max(0, machine.finishTimestamp - nowTick);
-    return Math.max(0, Math.ceil(remainingMs / 1000));
+    return remainingWashingSeconds[getMachineTimerKey(machine.type, machine.id)] ?? 0;
   };
 
   // Pending-collection transitions are driven by the server state and API polling.

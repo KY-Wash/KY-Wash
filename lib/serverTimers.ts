@@ -27,6 +27,19 @@ function hasLiveValue(value: unknown): boolean {
   return value !== null && value !== undefined && value !== '';
 }
 
+function toTimestamp(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) ? timestamp : undefined;
+  }
+
+  return undefined;
+}
+
 // Restore running cycles from persisted machine metadata or active usage history.
 // This is the source of truth used after reloads and on multi-device refreshes.
 export function rehydrateActiveCycles(state: any, now = Date.now()): boolean {
@@ -38,8 +51,13 @@ export function rehydrateActiveCycles(state: any, now = Date.now()): boolean {
     const activeRecord = activeUsageByMachine.get(key);
 
     let originalDuration = typeof machine.originalDuration === 'number' ? machine.originalDuration : undefined;
-    let startedAt = typeof machine.startedAt === 'number' ? machine.startedAt : undefined;
+    let startedAt = toTimestamp(machine.startedAt);
     let finishTimestamp = typeof machine.finishTimestamp === 'number' ? machine.finishTimestamp : undefined;
+    const targetEndTime = toTimestamp(machine.targetEndTime);
+
+    if (finishTimestamp === undefined && targetEndTime !== undefined) {
+      finishTimestamp = targetEndTime;
+    }
     const cachedStartTime = machineStartTimes.get(key);
 
     if (activeRecord) {
@@ -80,12 +98,17 @@ export function rehydrateActiveCycles(state: any, now = Date.now()): boolean {
     }
 
     if (startedAt !== undefined && machine.startedAt !== startedAt) {
-      machine.startedAt = startedAt;
+      machine.startedAt = new Date(startedAt).toISOString();
       stateChanged = true;
     }
 
     if (finishTimestamp !== undefined && machine.finishTimestamp !== finishTimestamp) {
       machine.finishTimestamp = finishTimestamp;
+      stateChanged = true;
+    }
+
+    if (finishTimestamp !== undefined && machine.targetEndTime !== new Date(finishTimestamp).toISOString()) {
+      machine.targetEndTime = new Date(finishTimestamp).toISOString();
       stateChanged = true;
     }
 
@@ -163,6 +186,9 @@ export function computeStateForClient(state: any, now = Date.now()) {
       if (typeof m.finishTimestamp === 'number') {
         finishTimestamp = m.finishTimestamp;
       }
+      if (finishTimestamp === undefined) {
+        finishTimestamp = toTimestamp(m.targetEndTime);
+      }
       const key = getMachineKey(m);
       const startTime = machineStartTimes.get(key);
       if (finishTimestamp === undefined && startTime !== undefined && typeof m.originalDuration === 'number') {
@@ -177,6 +203,7 @@ export function computeStateForClient(state: any, now = Date.now()) {
       userPhone: hasLiveValue(m.userPhone) ? m.userPhone : (activeRecord?.phoneNumber || activeRecord?.phone || m.userPhone),
       mode: hasLiveValue(m.mode) ? m.mode : (activeRecord?.mode || m.mode),
       finishTimestamp,
+      targetEndTime: finishTimestamp !== undefined ? new Date(finishTimestamp).toISOString() : undefined,
     };
   });
   return { ...state, machines };
@@ -190,7 +217,8 @@ export function mergeMachineRuntimeSnapshot(prevMachine: any, incomingMachine: a
 
   const preserveRunningState = prevStatus === 'running'
     && typeof prevFinishTimestamp === 'number'
-    && incomingStatus === 'running'
+    && prevFinishTimestamp > now
+    && (incomingStatus === 'running' || incomingStatus === 'available')
     && typeof incomingFinishTimestamp !== 'number';
 
   const finishTimestamp = preserveRunningState
@@ -225,7 +253,7 @@ export function tickServerTimers(state: any, now = Date.now()): boolean {
 
     if (machine.status === 'running') {
       const startTime = machineStartTimes.get(key);
-      let finishTimestamp = typeof machine.finishTimestamp === 'number' ? machine.finishTimestamp : undefined;
+      let finishTimestamp = typeof machine.finishTimestamp === 'number' ? machine.finishTimestamp : toTimestamp(machine.targetEndTime);
 
       if (finishTimestamp === undefined && startTime !== undefined && typeof machine.originalDuration === 'number') {
         finishTimestamp = startTime + machine.originalDuration * 60 * 1000;
@@ -234,6 +262,7 @@ export function tickServerTimers(state: any, now = Date.now()): boolean {
       if (finishTimestamp === undefined && typeof machine.timeLeft === 'number' && machine.timeLeft > 0) {
         finishTimestamp = now + machine.timeLeft * 1000;
         machine.finishTimestamp = finishTimestamp;
+        machine.targetEndTime = new Date(finishTimestamp).toISOString();
         stateChanged = true;
       }
 

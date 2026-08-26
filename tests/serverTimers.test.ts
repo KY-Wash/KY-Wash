@@ -33,6 +33,26 @@ describe('serverTimers', () => {
     expect(clientState.machines[0].finishTimestamp).toBe(now + 30 * 1000);
   });
 
+  it('rehydrates a cycle from ISO timestamps', () => {
+    const now = 2_050_000_000_000;
+    const state: any = {
+      machines: [{
+        id: 12,
+        type: 'washer',
+        status: 'available',
+        timeLeft: 0,
+        startedAt: new Date(now - 30_000).toISOString(),
+        targetEndTime: new Date(now + 30_000).toISOString(),
+      }],
+      usageHistory: [],
+    };
+
+    expect(rehydrateActiveCycles(state, now)).toBe(true);
+    expect(state.machines[0].status).toBe('running');
+    expect(state.machines[0].timeLeft).toBe(30);
+    expect(state.machines[0].finishTimestamp).toBe(now + 30_000);
+  });
+
   it('preserves live identity fields for active machines when the machine row is partial', () => {
     const now = 2_100_000_000_000;
     const state: any = {
@@ -96,7 +116,7 @@ describe('serverTimers', () => {
     expect(merged.timeLeft).toBe(45);
   });
 
-  it('drops a running countdown when server snapshot explicitly marks machine available', () => {
+  it('preserves a running countdown when a stale server snapshot marks it available', () => {
     const now = Date.now();
     const prevMachine = {
       status: 'running',
@@ -112,6 +132,21 @@ describe('serverTimers', () => {
     };
 
     const merged = mergeMachineRuntimeSnapshot(prevMachine, incomingMachine, now);
+
+    expect(merged.status).toBe('running');
+    expect(merged.finishTimestamp).toBe(prevMachine.finishTimestamp);
+    expect(merged.timeLeft).toBe(45);
+  });
+
+  it('accepts an available snapshot after the active cycle has expired', () => {
+    const now = Date.now();
+    const prevMachine = {
+      status: 'running',
+      finishTimestamp: now - 1_000,
+      timeLeft: 0,
+    };
+
+    const merged = mergeMachineRuntimeSnapshot(prevMachine, { status: 'available' }, now);
 
     expect(merged.status).toBe('available');
     expect(merged.finishTimestamp).toBeUndefined();
